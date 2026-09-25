@@ -1691,16 +1691,29 @@ function restoreScreen() {
  * нашего PRF (не восстановить) и чужой (неизвестно, где побывал).
  */
 /**
+ * Откуда пришёл импорт и куда после него.
+ *
+ * Без `flow` — импорт с главной, руками: сеть выбирает человек. С `flow` сеть
+ * уже названа app, выбирать её нечего:
+ * - `reply` — импорт по запросу app (`kind: 'import'`): по окончании окно
+ *   отвечает и закрывается, и app сразу входит этим аккаунтом через Signer;
+ * - `back` и `done` — импорт изнутри входа: назад — к входу, после — к нему же,
+ *   где импортированный аккаунт уже в списке.
+ *
+ * @typedef {{
+ *   reply?: (result: object) => void,
+ *   account?: string,
+ *   back?: () => void,
+ *   done?: () => void,
+ * }} ImportFlow
+ */
+
+/**
  * Импорт аккаунта по его приватному ключу.
  *
- * `request` — импорт по запросу app (`kind: 'import'`): сеть назвал app, выбирать
- * её нечего, а по окончании окно отвечает и закрывается само — человек
- * возвращается в app, и тот сразу входит этим аккаунтом через Signer. Без
- * `request` — импорт с главной, руками.
- *
- * @param {{ reply: (result: object) => void, account: string } | null} request
+ * @param {ImportFlow | null} flow
  */
-function importScreen(passkey, request = null) {
+function importScreen(passkey, flow = null) {
   const out = stack([])
   const cleared = el('span', { className: 'hint-quiet', textContent: 'Used once, never stored.' })
   const input = secretInput({
@@ -1711,8 +1724,8 @@ function importScreen(passkey, request = null) {
 
   screen({
     body: [
-      pageTitle('Import with a private key', request ? `${chain.name} · from Anchor or any other wallet` : 'From Anchor or any other wallet'),
-      request
+      pageTitle('Import with a private key', flow ? `${chain.name} · from Anchor or any other wallet` : 'From Anchor or any other wallet'),
+      flow
         ? null
         : section('network', [segmented(Object.values(CHAINS).map((entry) => [entry, entry.name, () => chainLogo(entry)]), network, (entry) => (network = entry))]),
       section('private key', [
@@ -1732,8 +1745,8 @@ function importScreen(passkey, request = null) {
       out,
     ],
     actions: [button('Find the account', () => find(), 'primary')],
-    links: request ? [cancelLink(request.reply)] : [],
-    back: request ? undefined : () => addAccountScreen(passkey),
+    links: flow?.reply ? [cancelLink(flow.reply)] : [],
+    back: flow ? flow.back : () => addAccountScreen(passkey),
   })
 
   async function find() {
@@ -1760,14 +1773,14 @@ function importScreen(passkey, request = null) {
         return
       }
 
-      importConfirm(passkey, network, privateKey, publicKey, found, request)
+      importConfirm(passkey, network, privateKey, publicKey, found, flow)
     } catch (error) {
       out.replaceChildren(failure(error))
     }
   }
 }
 
-function importConfirm(passkey, on, privateKey, publicKey, found, request = null) {
+function importConfirm(passkey, on, privateKey, publicKey, found, flow = null) {
   const out = stack([])
 
   // Аккаунт — один раз, с самым сильным permission, который открывает ключ.
@@ -1778,7 +1791,7 @@ function importConfirm(passkey, on, privateKey, publicKey, found, request = null
 
   // App спросил про один аккаунт — отмечен он; остальные под этим ключом можно
   // добавить галкой. Его под ключом нет — отмечены все, как с главной.
-  const asked = request && accounts.has(request.account) ? request.account : null
+  const asked = flow?.account && accounts.has(flow.account) ? flow.account : null
   const chosen = new Set(asked ? [asked] : accounts.keys())
   let withFast = true
   let removeOld = false
@@ -1824,13 +1837,14 @@ function importConfirm(passkey, on, privateKey, publicKey, found, request = null
     ],
     actions: [button('Import with passkey', () => apply(), 'primary')],
     links: [
-      request
-        ? cancelLink(request.reply)
+      flow?.reply
+        ? cancelLink(flow.reply)
         : [
             'Cancel',
             () => {
               privateKey = null
-              homeScreen()
+              if (flow?.back) flow.back()
+              else homeScreen()
             },
           ],
     ],
@@ -1904,14 +1918,19 @@ function importConfirm(passkey, on, privateKey, publicKey, found, request = null
 
       for (const { secret, scope, n } of hotKeys) await adoptHotKey(secret, scope, n)
 
-      // По запросу app — сразу обратно: app входит этим аккаунтом сам. Экран
-      // остаётся, только если есть что сказать (порог выше одного).
-      if (request) {
-        request.reply({ ok: true, publicKey: passkey.publicKey, credentialId: passkey.credentialId, accounts: names })
+      // По запросу app — сразу обратно: app входит этим аккаунтом сам. Изнутри
+      // входа — к нему. Экран остаётся, только если есть что сказать (порог
+      // выше одного).
+      if (flow?.reply) {
+        flow.reply({ ok: true, publicKey: passkey.publicKey, credentialId: passkey.credentialId, accounts: names })
         if (!notes.length) {
           window.close()
           return
         }
+      }
+      if (flow?.done && !notes.length) {
+        flow.done()
+        return
       }
 
       screen({
@@ -1921,7 +1940,13 @@ function importConfirm(passkey, on, privateKey, publicKey, found, request = null
           ...notes.map((text) => banner('warn', text)),
           explorerLink(txid, on),
         ],
-        actions: [request ? button('Back to Alcor', () => window.close(), 'primary') : button('Done', () => homeScreen(), 'primary')],
+        actions: [
+          flow?.reply
+            ? button('Back to Alcor', () => window.close(), 'primary')
+            : flow?.done
+              ? button('Continue', flow.done, 'primary')
+              : button('Done', () => homeScreen(), 'primary'),
+        ],
       })
     } catch (error) {
       out.replaceChildren(failure(error))
@@ -1979,7 +2004,7 @@ function loginScreen(incoming) {
       busy: 'Looking up the account',
       back: again,
       cancel,
-      run: async () => ((await accountsOn(chain, [passkey])).length ? again() : noAccountScreen(passkey, reply)),
+      run: async () => ((await accountsOn(chain, [passkey])).length ? again() : noAccountScreen(passkey, reply, again)),
     })
 
   const createNew = () =>
@@ -2052,6 +2077,13 @@ function loginScreen(incoming) {
               onclick: findOther,
             }),
             tile({
+              icon: ICONS.key,
+              title: 'Import a wallet',
+              sub: 'Bring an Anchor or other account with its private key',
+              aside: icon(ICONS.chevron, 14),
+              onclick: () => importScreen(passkeys[0], { back: again, done: again }),
+            }),
+            tile({
               icon: ICONS.plus,
               title: 'Create a new key',
               sub: 'For a different account',
@@ -2079,7 +2111,7 @@ function loginScreen(incoming) {
               face: avatar(null),
               title: 'No account yet',
               sub: `Key ${shortKey(passkey.publicKey)}`,
-              onclick: () => noAccountScreen(passkey, reply),
+              onclick: () => noAccountScreen(passkey, reply, again),
             })
           )
         )
@@ -2113,22 +2145,31 @@ const pick = ({ face, title, sub, onclick }) =>
     el('span', { className: 'pick-go' }, [icon(ICONS.chevron, 16)]),
   ])
 
-function noAccountScreen(passkey, reply) {
+/**
+ * Под passkey нет аккаунта в этой сети. Создавать аккаунт Signer пока не умеет,
+ * а перенести существующий — умеет: импорт по приватному ключу, после — снова
+ * вход (`again`), где аккаунт уже в списке.
+ */
+function noAccountScreen(passkey, reply, again) {
   screen({
     body: [
       state({
         icon: ICONS.user,
         tone: 'amber',
-        title: 'No account found',
-        text: `No ${chain.name} account uses this key yet. Add one on ${location.host}, then come back.`,
+        title: 'No account yet',
+        text: `No ${chain.name} account uses this passkey yet. Have one in Anchor or another wallet? Import it with its private key.`,
       }),
       card([field('passkey', mono(passkey.publicKey))]),
     ],
-    actions: [
-      button('Close', () => {
-        reply({ ok: false, error: `No ${chain.name} account for key ${passkey.publicKey}` })
-        window.close()
-      }),
+    actions: [button('Import a wallet', () => importScreen(passkey, { back: () => noAccountScreen(passkey, reply, again), done: again }), 'primary')],
+    links: [
+      [
+        'Close',
+        () => {
+          reply({ ok: false, error: `No ${chain.name} account for key ${passkey.publicKey}` })
+          window.close()
+        },
+      ],
     ],
   })
 }
