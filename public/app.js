@@ -75,6 +75,7 @@ import {
   scopeOf,
   setAutoSign,
 } from './session.js'
+import { k1PublicKey } from './k1.js'
 import { forgetRoot, nextFreeIndex, ownerKey, rootAccounts, rootFromPasskey, rootFromWords } from './root.js'
 import { discoverPasskey } from './discover.js'
 import { PrivateKey } from './vendor/wharfkit.js'
@@ -1716,7 +1717,7 @@ function importScreen(passkey) {
     out.replaceChildren(status('Looking up the account'))
 
     try {
-      const publicKey = String(privateKey.toPublic())
+      const publicKey = k1PublicKey(privateKey)
       const found = (await accountsForKey(network, publicKey)).filter((entry) =>
         ['owner', network.permission].includes(entry.permission)
       )

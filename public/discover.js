@@ -7,10 +7,11 @@
 //
 // Бэкенд для этого не нужен: чейн и есть реестр.
 
-import { Bytes, Checksum256, KeyType, PublicKey, p256 } from './vendor/wharfkit.js'
+import { p256 } from './vendor/wharfkit.js'
 import { assertWithPrf } from './passkey.js'
 import { ROOT_SALT, rootFromSecret } from './root.js'
 import { accountsEverywhere } from './sign.js'
+import { hostOf, presenceOf, signedDigest, webAuthnPublicKey } from './webauthn.js'
 
 /**
  * Найти passkey этого origin, которого нет в кеше.
@@ -47,45 +48,28 @@ export async function discoverPasskey() {
 /**
  * Кандидаты `PUB_WA_` из подписи ассерта.
  *
- * Подписано `authenticatorData || SHA-256(clientDataJSON)`. Байты ключа — как
- * у `createPublic` из @wharfkit/webauthn: сжатая точка, байт присутствия
- * (2 — пользователь подтверждён, 1 — только присутствовал), домен строкой.
- * Домен берётся из `clientDataJSON` — ровно его чейн сверит при подписи.
+ * Подписано `authenticatorData || SHA-256(clientDataJSON)`. Ключ собирается
+ * тем же `webAuthnPublicKey`, что и при создании passkey; домен берётся из
+ * `clientDataJSON` — ровно его чейн сверит при подписи.
  */
 export function recoverWebAuthnKeys(response) {
   const authData = new Uint8Array(response.authenticatorData)
   const clientDataJSON = new Uint8Array(response.clientDataJSON)
-
-  const message = new Uint8Array(authData.length + 32)
-  message.set(authData)
-  message.set(Checksum256.hash(Bytes.from(clientDataJSON)).array, authData.length)
-  const digest = Checksum256.hash(Bytes.from(message)).array
+  const digest = signedDigest(authData, clientDataJSON)
 
   const signature = p256.Signature.fromDER(new Uint8Array(response.signature))
-  const flags = authData[32]
-  const presence = flags & 4 ? 2 : flags & 1 ? 1 : 0
-  const host = new URL(JSON.parse(new TextDecoder().decode(clientDataJSON)).origin).hostname
+  const presence = presenceOf(authData[32])
+  const host = hostOf(clientDataJSON)
 
   const keys = []
   for (const bit of [0, 1]) {
     try {
       const point = signature.addRecoveryBit(bit).recoverPublicKey(digest).toRawBytes(true)
-      keys.push(String(new PublicKey(KeyType.WA, Bytes.from(webAuthnKeyData(point, presence, host)))))
+      keys.push(String(webAuthnPublicKey(point, presence, host)))
     } catch {
       // Невосстановимый бит — обычное дело.
     }
   }
 
   return keys
-}
-
-function webAuthnKeyData(point, presence, host) {
-  const name = new TextEncoder().encode(host)
-  const length = []
-  for (let value = name.length; ; value >>>= 7) {
-    length.push(value > 0x7f ? (value & 0x7f) | 0x80 : value)
-    if (value <= 0x7f) break
-  }
-
-  return Uint8Array.from([...point, presence, ...length, ...name])
 }

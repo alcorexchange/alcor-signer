@@ -163,6 +163,8 @@ public/
   root.js            корень: PRF → 24 слова (BIP-39) → owner-ключи по путям (BIP-32/44)
   session.js         горячие ключи из PRF по областям: IndexedDB, WebCrypto → SIG_R1_
   discover.js        новое устройство: PUB_WA_ из подписи ассерта, аккаунты по чейну
+  webauthn.js        ответ passkey → PUB_WA_ / SIG_WA_ (p256 из @noble/curves, свой CBOR)
+  k1.js              подпись и публичный ключ K1 (secp256k1 из @noble/curves)
   sign.js            сборка, подпись, отправка; экшены обратно из транзакции
   summary.js         сводка экрана подписи: декодер на каждый контракт, склейка
   vendor/wharfkit.js собранный бандл — руками не править
@@ -224,21 +226,28 @@ mkcert -cert-file .certs/sign.localhost.pem -key-file .certs/sign.localhost-key.
 ```
 
 Сертификат локальный (`mkcert`), CA уже в системе. **https обязателен**:
-`@wharfkit/webauthn` отказывается строить ключ с любого другого протокола
+`webauthn.js` отказывается строить ключ с любого другого протокола
 (`WebAuthn keys require https`), так что «просто http на localhost» не работает,
 хотя браузер passkey и создаст.
 
 ### Вендор-бандл
 
-`@wharfkit/antelope` и `@wharfkit/webauthn` тянут CommonJS-зависимости
-(`elliptic`, `bn.js`, `hash.js`, `brorand`), которые браузер нативным `import`
-не съест. Поэтому один раз прогоняется esbuild, а результат коммитится:
+`@wharfkit/antelope` тянет CommonJS-зависимости (`elliptic`, `bn.js`,
+`hash.js`, `brorand`), которые браузер нативным `import` не съест. Поэтому один
+раз прогоняется esbuild, а результат коммитится:
 
 ```bash
 yarn vendor    # перепроверка: собрать заново и сверить с vendor/HASH
 ```
 
 В деплое сборка не запускается. Апгрейд wharfkit — единственный повод трогать.
+
+**Секреты — только через `@noble/curves`.** `elliptic` в бандле остаётся, потому
+что без него нет antelope, но у него открытая уязвимость подписи
+(GHSA-848j-6mx2-7j84). Поэтому подпись K1 и публичный ключ из приватного — в
+`k1.js` на `secp256k1`, passkey → `PUB_WA_`/`SIG_WA_` — в `webauthn.js` на
+`p256`. `elliptic` видит только публичное: восстановление ключа из подписи,
+разбор. `PrivateKey.signDigest()` и `.toPublic()` в vault не вызываются.
 
 ---
 

@@ -19,6 +19,7 @@ import {
 import { PINNED_ABIS } from './abis.js'
 import { CHAINS } from './chain.js'
 import { signDigest, signDigestWithPrf } from './passkey.js'
+import { signK1 } from './k1.js'
 import { signWithSession } from './session.js'
 
 /**
@@ -368,7 +369,7 @@ export async function signTransactionWithSession(key, transaction, chainId, acti
  * вызвал, и отпускает сразу после.
  */
 export function signTransactionWithKey(privateKey, transaction, chainId) {
-  return pack(transaction, privateKey.signDigest(transaction.signingDigest(chainId)))
+  return pack(transaction, signK1(privateKey, transaction.signingDigest(chainId)))
 }
 
 function pack(transaction, signature) {

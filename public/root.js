@@ -22,6 +22,7 @@ import {
   validateMnemonic,
 } from './vendor/wharfkit.js'
 import { CHAINS } from './chain.js'
+import { k1PublicKey } from './k1.js'
 import { derivePrfSecret } from './passkey.js'
 import { accountsForKey } from './sign.js'
 
@@ -90,7 +91,7 @@ export function ownerKey(root, chain, index) {
   const node = root.master.derive(ownerPath(chain, index))
   const privateKey = new PrivateKey(KeyType.K1, Bytes.from(node.privateKey))
 
-  return { index, path: ownerPath(chain, index), privateKey, publicKey: String(privateKey.toPublic()) }
+  return { index, path: ownerPath(chain, index), privateKey, publicKey: k1PublicKey(privateKey) }
 }
 
 /**

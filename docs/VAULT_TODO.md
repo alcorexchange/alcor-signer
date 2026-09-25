@@ -330,8 +330,8 @@ Confirm»** — не закрывается ничем. Ни попапом, н�
 
 - **Восемь пакетов против ~1500 в app** — вот реальная цель, не ноль:
   ```
-  @wharfkit/antelope + @wharfkit/webauthn
-    → bn.js, brorand, elliptic, hash.js, pako, cborg, tslib
+  @wharfkit/antelope + @noble/curves + @scure/bip39/bip32
+    → bn.js, brorand, elliptic, hash.js, pako, tslib
   ```
   Ноль недостижим: нужна сериализация Antelope и сборка `SIG_WA_`.
 - **Вендорить в репозиторий**, точные версии, никакого резолва npm при деплое.
@@ -504,7 +504,7 @@ vault  http://vault.localhost:8080   статика, тупой сервер н�
   **Safari — нет**, ему нужна строка в hosts.
 - Хосты на `.localhost` считаются potentially trustworthy, поэтому WebAuthn,
   WebCrypto и IndexedDB работают по голому http.
-  ⚠️ Но ключ из этого не собрать: `@wharfkit/webauthn` требует https явно
+  ⚠️ Но ключ из этого не собрать: `webauthn.js` требует https явно
   (`WebAuthn keys require https`) и пишет в `PUB_WA_` хост origin. Так что
   **https обязателен**, и ставится он локальным `mkcert` — доверенный CA, ошибки
   сертификата нет, возражение против сертификата снимается целиком.

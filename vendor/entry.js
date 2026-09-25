@@ -19,7 +19,6 @@ export {
   SignedTransaction,
   Transaction,
 } from '@wharfkit/antelope'
-export { createPublic, createSignature } from '@wharfkit/webauthn'
 
 // 24 слова и дерево ключей (ADR-0010 §3). Стандарты BIP-39 / BIP-32, только
 // английский словарь: слова, которые человек переписывает, должны читаться
@@ -28,6 +27,8 @@ export { entropyToMnemonic, mnemonicToEntropy, mnemonicToSeedSync, validateMnemo
 export { wordlist as englishWordlist } from '@scure/bip39/wordlists/english'
 export { HDKey } from '@scure/bip32'
 
-// P-256: публичная точка из скаляра горячего ключа (WebCrypto её не выводит)
-// и восстановление ключа passkey из подписи на новом устройстве (§7).
+// P-256: ключ и подпись passkey (webauthn.js), публичная точка горячего ключа
+// (WebCrypto её не выводит), восстановление ключа passkey на новом устройстве.
 export { p256 } from '@noble/curves/p256'
+// secp256k1: всё, что касается секрета K1-ключей (k1.js), — мимо elliptic.
+export { secp256k1 } from '@noble/curves/secp256k1'

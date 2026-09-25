@@ -5,7 +5,8 @@
 // в подписывающий origin не может приехать ничего из полутора тысяч пакетов
 // приложения. Меняется редко, оба места правятся руками.
 
-import { PublicKey, createPublic, createSignature } from './vendor/wharfkit.js'
+import { PublicKey } from './vendor/wharfkit.js'
+import { createPublic, createSignature } from './webauthn.js'
 
 /**
  * ES256 / P-256. Единственный алгоритм, который принимает Antelope, поэтому

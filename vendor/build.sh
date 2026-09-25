@@ -19,12 +19,12 @@ const pin = p => require('./node_modules/'+p+'/package.json').version
 const hash = createHash('sha256').update(readFileSync('public/vendor/wharfkit.js')).digest('hex')
 writeFileSync('vendor/HASH', [
   '@wharfkit/antelope ' + pin('@wharfkit/antelope'),
-  '@wharfkit/webauthn ' + pin('@wharfkit/webauthn'),
   '@scure/bip39 ' + pin('@scure/bip39'),
   '@scure/bip32 ' + pin('@scure/bip32'),
   '@noble/curves ' + pin('@noble/curves'),
-  // Подписывает K1 (owner из 24 слов, импорт) — версия с разбором CVE важна.
+  // Внутри antelope; секретов K1 не касается (k1.js), но версия должна быть видна.
   'elliptic ' + pin('elliptic'),
+  'bn.js ' + pin('bn.js'),
   'esbuild ' + require('./node_modules/esbuild/package.json').version,
   'sha256 ' + hash,
 ].join('\n') + '\n')
