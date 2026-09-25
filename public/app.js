@@ -316,7 +316,7 @@ async function createKeyFlow(out, then) {
 }
 
 /** Passkey с другого устройства: кеша нет, ключ и аккаунты находятся по чейну (§7). */
-async function findKeyFlow(out, then) {
+async function findKeyFlow(out, then, onFail = (error) => out.replaceChildren(failure(error))) {
   out.replaceChildren(status('Pick your key — confirm with your passkey'))
 
   try {
@@ -324,7 +324,7 @@ async function findKeyFlow(out, then) {
     forgetRoot(root)
     then(rememberPasskey(passkey))
   } catch (error) {
-    out.replaceChildren(failure(error))
+    onFail(error)
   }
 }
 
@@ -1970,22 +1970,39 @@ function loginScreen(incoming) {
   const findOther = () => findKeyFlow(out, added)
 
   // Ключа в кеше этого браузера нет. Чаще всего это новое устройство, куда
-  // passkey уже приехал через iCloud или Google, — поэтому главное действие
-  // «войти своим», а «завести новый» вторым: новый ключ — другой ключ, и
-  // аккаунтов под ним нет.
+  // passkey уже приехал через iCloud или Google, — поэтому сначала только
+  // «войти своим». Завести новый предлагается, лишь когда свой не нашёлся:
+  // новый ключ — другой ключ, и аккаунтов под ним нет.
+  //
+  // «Не нашёлся» и «отменил» WebAuthn не различает намеренно (приватность), так
+  // что после любого из них — обе кнопки. Настоящая ошибка (браузер без PRF)
+  // показывается как есть.
   if (!passkeys.length) {
-    screen({
-      body: [
-        state({
-          icon: ICONS.key,
-          title: `Sign in to ${from}`,
-          text: 'Already use Alcor Signer? Your passkey syncs through iCloud Keychain or Google Password Manager — sign in with it. New here? Create one.',
-        }),
-        out,
-      ],
-      actions: [button('Sign in with my passkey', findOther, 'primary'), button('Create a passkey', createNew)],
-      links: [cancel],
-    })
+    const first = (notFound) =>
+      screen({
+        body: [
+          state({
+            icon: ICONS.key,
+            title: `Sign in to ${from}`,
+            text: notFound
+              ? 'No Alcor Signer passkey came back. New here? Create one. Cancelled by mistake? Try again.'
+              : 'Your passkey syncs through iCloud Keychain or Google Password Manager — sign in with it.',
+          }),
+          out,
+        ],
+        actions: notFound
+          ? [button('Create a passkey', createNew, 'primary'), button('Try again', lookup)]
+          : [button('Sign in with my passkey', lookup, 'primary')],
+        links: [cancel],
+      })
+
+    const lookup = () =>
+      findKeyFlow(out, added, (error) => {
+        first(true)
+        out.replaceChildren(...(error?.name === 'NotAllowedError' ? [] : [failure(error)]))
+      })
+
+    first(false)
     return
   }
 
@@ -2054,7 +2071,9 @@ function loginScreen(incoming) {
       )
       const [only] = accounts
       draw(
-        accounts.length === 1 ? 'your account' : 'choose an account',
+        // Сеть — в подписи списка: вход идёт в той сети, где открыт app, и
+        // аккаунты других сетей здесь не видны намеренно.
+        accounts.length === 1 ? `your ${chain.name} account` : `your ${chain.name} accounts`,
         rows,
         accounts.length === 1 ? [button(`Continue as ${only.name}`, () => signIn(only), 'primary')] : []
       )
