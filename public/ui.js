@@ -727,6 +727,48 @@ export function secretInput({ placeholder, multiline = false, onCleared = () => 
   return node
 }
 
+/**
+ * Подтверждение поверх экрана — нативный `<dialog>`: фон затемнён, фокус
+ * внутри, Esc и клик мимо окна — «нет». Для выбора с последствиями, который
+ * легко сделать мимоходом одним тапом по табу.
+ *
+ * @returns {Promise<boolean>} true — подтвердили
+ */
+export function confirmDialog({ icon: paths, tone = '', title, text, confirm, cancel = 'Not now' }) {
+  return new Promise((resolve) => {
+    const dialog = el('dialog', { className: 'confirm' })
+    const answer = (value) => {
+      resolve(value)
+      dialog.close()
+    }
+
+    dialog.append(
+      el('div', { className: 'confirm-body' }, [
+        paths ? el('span', { className: `confirm-icon ${tone}`.trim() }, [icon(paths, 18)]) : null,
+        el('h2', { className: 'confirm-title', textContent: title }),
+        el('p', { className: 'confirm-text', textContent: text }),
+        el('div', { className: 'confirm-actions' }, [
+          el('button', { type: 'button', className: 'primary', textContent: confirm, onclick: () => answer(true) }),
+          el('button', { type: 'button', className: 'quiet', textContent: cancel, onclick: () => answer(false) }),
+        ]),
+      ])
+    )
+
+    // Esc закрывает окно сам; клик по затемнению попадает в сам <dialog> —
+    // содержимое лежит во внутреннем блоке.
+    dialog.addEventListener('close', () => {
+      resolve(false)
+      dialog.remove()
+    })
+    dialog.addEventListener('click', (event) => {
+      if (event.target === dialog) answer(false)
+    })
+
+    document.body.append(dialog)
+    dialog.showModal()
+  })
+}
+
 /** Список последствий. Не плашка на всё — по строке на каждое, чтобы читалось. */
 export const consequences = (items) =>
   el('ul', { className: 'consequences' }, items.map((text) => el('li', { textContent: text })))

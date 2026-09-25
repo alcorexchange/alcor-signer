@@ -1013,6 +1013,28 @@ button.secret-copy.done { color: var(--primary); border-color: var(--primary-lin
 .link { font-size: 11.5px; color: var(--primary); text-decoration: none; }
 .link:hover { text-decoration: underline; }
 
+/* ── подтверждение поверх экрана ───────────────────────────── */
+
+/* Плоско: рамка и затемнённый фон, без тени. По центру — стилями браузера. */
+dialog.confirm {
+  width: min(340px, calc(100vw - 32px));
+  padding: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--bg);
+  color: var(--text);
+}
+dialog.confirm::backdrop { background: rgba(0, 0, 0, 0.62); }
+
+.confirm-body { display: flex; flex-direction: column; gap: 8px; padding: 22px 20px 16px; }
+.confirm-icon { display: flex; margin-bottom: 4px; color: var(--primary); }
+.confirm-icon.amber { color: var(--caution); }
+.confirm-title { margin: 0; font-size: 16px; font-weight: 500; letter-spacing: -0.01em; }
+.confirm-text { margin: 0; font-size: 13px; line-height: 1.55; color: var(--text-secondary); }
+.confirm-actions { display: flex; flex-direction: column; gap: 4px; margin-top: 12px; }
+.confirm-actions button.quiet { border-color: transparent; color: var(--text-muted); }
+.confirm-actions button.quiet:hover:not(:disabled) { background: none; color: var(--text); }
+
 /* ── кнопки ────────────────────────────────────────────────── */
 
 /*

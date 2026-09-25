@@ -26,6 +26,7 @@ import {
   chip,
   choice,
   chrome,
+  confirmDialog,
   consequences,
   disclosure,
   el,
@@ -152,7 +153,8 @@ let goBack = null
  * снять фокус, а уход с экрана стёр бы вставленные слова или ключ.
  */
 addEventListener('keydown', (event) => {
-  if (event.key !== 'Escape' || !goBack || event.target.closest?.('input, textarea')) return
+  // Открытое окно подтверждения закрывает Esc само — экран под ним остаётся.
+  if (event.key !== 'Escape' || !goBack || event.target.closest?.('input, textarea, dialog')) return
   event.preventDefault()
   goBack()
 })
@@ -943,22 +945,20 @@ function signingPanel(entry, { onState, onRemove }) {
     apply(next)
   }
 
-  // Auto — только после того, как человек прочитал, что он включает. Таб уже
-  // подсвечен, но режим не поменялся, пока не нажата кнопка; «Not now» и клик
-  // по другому табу возвращают всё как было.
-  function confirmAuto() {
-    out.replaceChildren(
-      el('div', {}, [
-        el('p', { className: 'level-text', textContent: AUTO_NOTICE }),
-        el('div', { className: 'level-actions' }, [
-          inlineAction('Turn on Auto sign', ICONS.auto, () => apply('auto')),
-          inlineAction('Not now', null, () => {
-            out.replaceChildren()
-            render()
-          }, 'quiet'),
-        ]),
-      ])
-    )
+  // Auto — только после того, как человек прочитал, что он включает: окном
+  // поверх экрана с одной главной кнопкой. «Not now», Esc или клик мимо —
+  // табы возвращаются на прежний режим.
+  async function confirmAuto() {
+    const yes = await confirmDialog({
+      icon: ICONS.auto,
+      tone: LEVEL_TONE.auto,
+      title: 'Turn on Auto sign?',
+      text: AUTO_NOTICE,
+      confirm: 'Turn on Auto sign',
+    })
+
+    if (yes) apply('auto')
+    else render()
   }
 
   function apply(next) {
@@ -1969,19 +1969,21 @@ function loginScreen(incoming) {
     })
   const findOther = () => findKeyFlow(out, added)
 
-  // Ключа здесь нет — выбирать нечего, и тогда завести или найти ключ и есть
-  // главное действие экрана.
+  // Ключа в кеше этого браузера нет. Чаще всего это новое устройство, куда
+  // passkey уже приехал через iCloud или Google, — поэтому главное действие
+  // «войти своим», а «завести новый» вторым: новый ключ — другой ключ, и
+  // аккаунтов под ним нет.
   if (!passkeys.length) {
     screen({
       body: [
         state({
           icon: ICONS.key,
           title: `Sign in to ${from}`,
-          text: 'There is no key on this device yet. Create a passkey, or use one you made on another device.',
+          text: 'Already use Alcor Signer? Your passkey syncs through iCloud Keychain or Google Password Manager — sign in with it. New here? Create one.',
         }),
         out,
       ],
-      actions: [button('Create a passkey', createNew, 'primary'), button('Use a key from another device', findOther)],
+      actions: [button('Sign in with my passkey', findOther, 'primary'), button('Create a passkey', createNew)],
       links: [cancel],
     })
     return
