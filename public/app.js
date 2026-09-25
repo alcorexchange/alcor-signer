@@ -1674,15 +1674,27 @@ function restoreScreen() {
  * Горячим он не становится никогда: он K1 (не сделать неэкспортируемым), не из
  * нашего PRF (не восстановить) и чужой (неизвестно, где побывал).
  */
-function importScreen(passkey) {
+/**
+ * Импорт аккаунта по его приватному ключу.
+ *
+ * `request` — импорт по запросу app (`kind: 'import'`): сеть назвал app, выбирать
+ * её нечего, а по окончании окно отвечает и закрывается само — человек
+ * возвращается в app, и тот сразу входит этим аккаунтом через Signer. Без
+ * `request` — импорт с главной, руками.
+ *
+ * @param {{ reply: (result: object) => void, account: string } | null} request
+ */
+function importScreen(passkey, request = null) {
   const out = stack([])
   const input = secretInput({ placeholder: 'PVT_K1_… or 5…' })
   let network = chain
 
   screen({
     body: [
-      pageTitle('Import with a private key', 'From Anchor or any other wallet'),
-      section('network', [segmented(Object.values(CHAINS).map((entry) => [entry, entry.name, () => chainLogo(entry)]), network, (entry) => (network = entry))]),
+      pageTitle('Import with a private key', request ? `${chain.name} · from Anchor or any other wallet` : 'From Anchor or any other wallet'),
+      request
+        ? null
+        : section('network', [segmented(Object.values(CHAINS).map((entry) => [entry, entry.name, () => chainLogo(entry)]), network, (entry) => (network = entry))]),
       section('private key', [
         input,
         // Главное на экране после самого поля: куда вставлять можно. Адрес — тем
@@ -1700,7 +1712,8 @@ function importScreen(passkey) {
       out,
     ],
     actions: [button('Find the account', () => find(), 'primary')],
-    back: () => addAccountScreen(passkey),
+    links: request ? [cancelLink(request.reply)] : [],
+    back: request ? undefined : () => addAccountScreen(passkey),
   })
 
   async function find() {
@@ -1727,14 +1740,14 @@ function importScreen(passkey) {
         return
       }
 
-      importConfirm(passkey, network, privateKey, publicKey, found)
+      importConfirm(passkey, network, privateKey, publicKey, found, request)
     } catch (error) {
       out.replaceChildren(failure(error))
     }
   }
 }
 
-function importConfirm(passkey, on, privateKey, publicKey, found) {
+function importConfirm(passkey, on, privateKey, publicKey, found, request = null) {
   const out = stack([])
 
   // Аккаунт — один раз, с самым сильным permission, который открывает ключ.
@@ -1743,13 +1756,16 @@ function importConfirm(passkey, on, privateKey, publicKey, found) {
     if (!accounts.has(entry.name) || entry.permission === 'owner') accounts.set(entry.name, entry.permission)
   }
 
-  const chosen = new Set(accounts.keys())
+  // App спросил про один аккаунт — отмечен он; остальные под этим ключом можно
+  // добавить галкой. Его под ключом нет — отмечены все, как с главной.
+  const asked = request && accounts.has(request.account) ? request.account : null
+  const chosen = new Set(asked ? [asked] : accounts.keys())
   let withFast = true
   let removeOld = false
 
   const rows = [...accounts].map(([name, permission]) =>
     checkbox(name, (checked) => (checked ? chosen.add(name) : chosen.delete(name)), {
-      checked: true,
+      checked: chosen.has(name),
       sub: permission === 'owner' ? 'Full control — your 24 words will restore it' : 'Active key only — your 24 words won’t restore it',
       aside: chip(permission, null, permission === 'owner' ? 'mint' : ''),
     })
@@ -1783,13 +1799,15 @@ function importConfirm(passkey, on, privateKey, publicKey, found) {
     ],
     actions: [button('Import with passkey', () => apply(), 'primary')],
     links: [
-      [
-        'Cancel',
-        () => {
-          privateKey = null
-          homeScreen()
-        },
-      ],
+      request
+        ? cancelLink(request.reply)
+        : [
+            'Cancel',
+            () => {
+              privateKey = null
+              homeScreen()
+            },
+          ],
     ],
   })
 
@@ -1861,6 +1879,16 @@ function importConfirm(passkey, on, privateKey, publicKey, found) {
 
       for (const { secret, scope, n } of hotKeys) await adoptHotKey(secret, scope, n)
 
+      // По запросу app — сразу обратно: app входит этим аккаунтом сам. Экран
+      // остаётся, только если есть что сказать (порог выше одного).
+      if (request) {
+        request.reply({ ok: true, publicKey: passkey.publicKey, credentialId: passkey.credentialId, accounts: names })
+        if (!notes.length) {
+          window.close()
+          return
+        }
+      }
+
       screen({
         body: [
           pageTitle('Imported', names.join(', ')),
@@ -1868,7 +1896,7 @@ function importConfirm(passkey, on, privateKey, publicKey, found) {
           ...notes.map((text) => banner('warn', text)),
           explorerLink(txid, on),
         ],
-        actions: [button('Done', () => homeScreen(), 'primary')],
+        actions: [request ? button('Back to Alcor', () => window.close(), 'primary') : button('Done', () => homeScreen(), 'primary')],
       })
     } catch (error) {
       out.replaceChildren(failure(error))
@@ -2629,6 +2657,26 @@ function settingsScreen({ request, reply }) {
   })
 }
 
+// ─────────────────────────────────────────────── импорт по запросу app
+
+/**
+ * Импорт по запросу app — для кошельков, которые не подписывают `updateauth`
+ * с сайта (Anchor): ключ человек вставляет здесь, а не в app. Passkey ещё нет —
+ * сначала он (с 24 словами), потом тот же импорт.
+ */
+function importRequest({ request, reply }) {
+  const context = { reply, account: String(request.account ?? '') }
+  const [primary] = loadPasskeys()
+  if (primary) return importScreen(primary, context)
+
+  welcomeScreen({
+    then: (passkey, root) => {
+      forgetRoot(root)
+      importScreen(passkey, context)
+    },
+  })
+}
+
 // ─────────────────────────────────────────────── без окна
 
 /**
@@ -2732,22 +2780,7 @@ const pending = isEmbedded() ? null : awaitRequest()
 if (isEmbedded()) {
   serveEmbedded({ sign: autoSign, level: embeddedLevel })
 } else if (!pending) {
-  // Ссылка из app для кошельков без привязки (Anchor) — сразу на импорт. Хеш
-  // стирается: обновление страницы должно вести на главную, а не обратно сюда.
-  // Passkey ещё нет — сначала его завести (с 24 словами), потом тот же импорт.
-  const wantsImport = location.hash === '#import'
-  if (wantsImport) history.replaceState(null, '', location.pathname)
-
-  const [primary] = loadPasskeys()
-  if (!wantsImport) await homeScreen()
-  else if (primary) importScreen(primary)
-  else
-    welcomeScreen({
-      then: (passkey, root) => {
-        forgetRoot(root)
-        importScreen(passkey)
-      },
-    })
+  await homeScreen()
 } else {
   screen({
     body: [
@@ -2777,6 +2810,7 @@ if (isEmbedded()) {
     if (incoming.request.kind === 'login') loginScreen(incoming)
     else if (incoming.request.kind === 'enroll') enrollScreen(incoming)
     else if (incoming.request.kind === 'settings') settingsScreen(incoming)
+    else if (incoming.request.kind === 'import') importRequest(incoming)
     else await confirmScreen(incoming)
   }
 }

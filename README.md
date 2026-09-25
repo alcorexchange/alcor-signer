@@ -177,7 +177,7 @@ postMessage (`protocol.js`) и адрес `VAULT_ORIGIN` в `config/vault.ts` ap
 Файлы там:
 
 ```
-lib/vault/popup.ts                     окно и невидимый iframe: login, enroll, sign, settings, level
+lib/vault/popup.ts                     окно и невидимый iframe: login, enroll, import, sign, settings, level
 lib/vault/sessions.ts                  запомненные входы (только публичное) — переживают рефреш
 lib/vault/authority.ts                 чтение rpid из PUB_WA_, ключ на permission
 lib/signers/VaultSigner.ts             подписант поверх окна
@@ -489,7 +489,9 @@ Iframe работает, только когда app и vault — один са�
 
 Поэтому Anchor привязку не предлагает вовсе: модалка в app (`importOnly` в
 `useVaultEnrollment.ts`) ведёт его в Alcor Signer на импорт приватного ключа —
-ссылкой `sign…/#import`, которая открывает экран импорта сразу.
+окном с запросом `kind: 'import'` (`requestImport`). Ключ вставляется в окне
+Signer; после второго passkey окно отвечает app (passkey и аккаунты) и
+закрывается, а app сразу входит этим аккаунтом через Signer.
 
 То есть запрет — политика Anchor, а не общее правило Antelope. Текст отказа
 разбирается в `utils/antelopeError.ts` (`BY_WALLET`) и превращается в инструкцию,
