@@ -1,43 +1,32 @@
-// Passkey → ключ и подпись Antelope (`PUB_WA_`, `SIG_WA_`).
+// Passkey → Antelope key and signature (`PUB_WA_`, `SIG_WA_`).
 //
-// Своё, а не @wharfkit/webauthn: там две функции, а тащил он за собой старую
-// копию elliptic и CBOR-библиотеку. Здесь — P-256 из @noble/curves, который и
-// так в бандле, и CBOR ровно в том объёме, что нужен для ключа WebAuthn.
-// Формат повторён байт в байт — ключи, заведённые раньше, остаются теми же.
+// Our own instead of @wharfkit/webauthn, which pulled an old elliptic and a CBOR
+// library. P-256 comes from @noble/curves; the format matches byte for byte.
 
 import { Bytes, Checksum256, KeyType, PublicKey, Signature, p256 } from './vendor/wharfkit.js'
 
-/**
- * Байт присутствия внутри `PUB_WA_`: 2 — пользователь подтверждён (UV),
- * 1 — только присутствовал (UP), 0 — ни то ни другое. Чейн сверяет его точно.
- */
+// Presence byte in `PUB_WA_`: 2 verified (UV), 1 present (UP), 0 neither. The chain checks it exactly.
 export const presenceOf = (flags) => (flags & 0x04 ? 2 : flags & 0x01 ? 1 : 0)
 
-/** `PUB_WA_`: сжатая точка, байт присутствия, rpid строкой (длина varuint32). */
+// `PUB_WA_`: compressed point, presence byte, rpId as a varuint32-prefixed string.
 export function webAuthnPublicKey(point, presence, host) {
   return new PublicKey(KeyType.WA, Bytes.from([...point, presence, ...withLength(new TextEncoder().encode(host))]))
 }
 
-/** rpid ключа — хост из `clientDataJSON`, и только https. */
 export function hostOf(clientDataJSON) {
   const origin = new URL(JSON.parse(new TextDecoder().decode(clientDataJSON)).origin)
   if (origin.protocol !== 'https:') throw new Error('WebAuthn keys require https')
   return origin.hostname
 }
 
-/**
- * Ключ Antelope только что созданного passkey — из ответа `credentials.create`.
- *
- * Точка берётся из `authData` внутри `attestationObject`, а не из
- * `getPublicKey()`: менеджеры паролей, подменяющие WebAuthn, отдают ответ не
- * всегда со всеми методами, а `attestationObject` есть у всех.
- */
+// The point comes from `authData` in `attestationObject`, not `getPublicKey()`: password
+// managers that replace WebAuthn don't always implement every method.
 export function createPublic(response) {
   const attestation = cbor(new Uint8Array(response.attestationObject))
   const authData = attestation.get('authData')
   if (!(authData instanceof Uint8Array)) throw new Error('Missing auth data')
 
-  // rpIdHash (32) · flags (1) · counter (4) · aaguid (16) · длина id (2) · id · ключ COSE
+  // rpIdHash (32) · flags (1) · counter (4) · aaguid (16) · id length (2) · id · COSE key
   const flags = authData[32]
   const idLength = (authData[53] << 8) | authData[54]
   const key = cbor(authData.subarray(55 + idLength))
@@ -59,12 +48,9 @@ export function createPublic(response) {
 }
 
 /**
- * Подпись Antelope из ответа `credentials.get`.
- *
- * Авторизатор подписывает `authenticatorData || SHA-256(clientDataJSON)` и
- * отдаёт r, s в DER. Antelope нужен ещё recid — какой из кандидатов при
- * восстановлении наш ключ, — и оба блоба целиком: чейн проверит по ним
- * challenge и rpid. s не нормализуется: чейн принимает подпись как есть.
+ * The authenticator signs `authenticatorData || SHA-256(clientDataJSON)` and returns DER
+ * r, s. Antelope also needs the recid and both blobs whole: the chain checks challenge
+ * and rpId from them. s is not normalized: the chain accepts it as is.
  */
 export function createSignature(publicKey, response) {
   const authData = new Uint8Array(response.authenticatorData)
@@ -88,7 +74,6 @@ export function createSignature(publicKey, response) {
   )
 }
 
-/** Что подписал авторизатор — дайджестом. */
 export function signedDigest(authData, clientDataJSON) {
   const message = new Uint8Array(authData.length + 32)
   message.set(authData)
@@ -96,8 +81,7 @@ export function signedDigest(authData, clientDataJSON) {
   return Checksum256.hash(Bytes.from(message)).array
 }
 
-
-/** Байты с длиной впереди (varuint32) — так Antelope пишет `bytes` и `string`. */
+// Length-prefixed bytes (varuint32), as Antelope writes `bytes` and `string`.
 function withLength(bytes) {
   const length = []
   for (let value = bytes.length; ; value >>>= 7) {
@@ -107,11 +91,8 @@ function withLength(bytes) {
   return [...length, ...bytes]
 }
 
-/**
- * CBOR — ровно то, из чего состоят `attestationObject` и ключ COSE: числа,
- * байты, строки, массивы, словари, true/false/null. Всё прочее — ошибка, а не
- * догадка. Словарь — `Map`: у COSE ключи числовые и бывают отрицательными.
- */
+// Just enough CBOR for `attestationObject` and a COSE key; anything else is an error.
+// Maps are `Map`s: COSE keys are numeric and can be negative.
 function cbor(bytes) {
   let at = 0
 

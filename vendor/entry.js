@@ -1,5 +1,5 @@
-// Единственная точка, через которую в vault попадает чужой код.
-// Экспортируем поимённо: что не названо здесь, в бандл не попадёт.
+// The only way third-party code gets into the vault.
+// Named exports only: whatever is not listed here stays out of the bundle.
 export {
   ABI,
   Action,
@@ -20,15 +20,14 @@ export {
   Transaction,
 } from '@wharfkit/antelope'
 
-// 24 слова и дерево ключей (ADR-0010 §3). Стандарты BIP-39 / BIP-32, только
-// английский словарь: слова, которые человек переписывает, должны читаться
-// любым кошельком, а не только нашим.
+// 24 words and the key tree (ADR-0010 §3): standard BIP-39 / BIP-32, English
+// wordlist only, so any wallet can read the words.
 export { entropyToMnemonic, mnemonicToEntropy, mnemonicToSeedSync, validateMnemonic } from '@scure/bip39'
 export { wordlist as englishWordlist } from '@scure/bip39/wordlists/english'
 export { HDKey } from '@scure/bip32'
 
-// P-256: ключ и подпись passkey (webauthn.js), публичная точка горячего ключа
-// (WebCrypto её не выводит), восстановление ключа passkey на новом устройстве.
+// P-256: passkey keys and signatures, the fast key's public point (WebCrypto
+// doesn't expose it), passkey key recovery on a new device.
 export { p256 } from '@noble/curves/p256'
-// secp256k1: всё, что касается секрета K1-ключей (k1.js), — мимо elliptic.
+// secp256k1: everything touching K1 secrets (k1.js) bypasses elliptic.
 export { secp256k1 } from '@noble/curves/secp256k1'

@@ -1,17 +1,10 @@
-// Vault (Alcor Signer) — изолированный подписывающий origin. Режимы:
+// Alcor Signer: an isolated signing origin. Modes:
 //
-//   открыт руками        → аккаунты, уровни подписи, импорт, ключи
-//   открыт app, login    → отдать публичный ключ, не подписывая ничего
-//   открыт app, enroll   → ключи для аккаунта, который поставит кошелёк app
-//   открыт app, sign     → показать, что происходит, и подписать
-//   iframe в app         → Auto sign: подписать без экрана или отказать
+//   opened directly  → accounts, signing levels, import, keys
+//   opened by app    → login, enroll, sign, settings, import
+//   iframe in app    → Auto sign: sign without a screen, or refuse
 //
-// Язык экранов — пользовательский и английский. «permission», `PUB_WA_`
-// человеку не говорят ничего; он знает passkey, свой аккаунт и свои деньги.
-// Всё техническое живёт под «Technical details» — не спрятано, но и не на
-// первом плане.
-//
-// Ничего из app сюда не импортируется и импортироваться не может: другой origin.
+// Nothing from the app is imported here, and cannot be: it is another origin.
 
 import {
   ICONS,
@@ -100,38 +93,22 @@ import { describe, isAlcorTrade, summarize } from './summary.js'
 
 const appRoot = document.getElementById('app')
 
-/** Имя аккаунта или permission в Antelope: до 12 символов a–z, 1–5 и точки (13-й — реже, но бывает). */
 const ANTELOPE_NAME = /^[a-z1-5.]{1,13}$/
 
-/**
- * Колесо, пущенное мимо прокручиваемой области.
- *
- * В попапе вне прокрутки живут шапка и панель кнопок. Человек крутит колесо над
- * ними — и не происходит ничего. Прокрутка тут очевидно одна, так что найти её
- * за человека дешевле, чем объяснять ему, куда наводить курсор. На большом
- * экране `main` не прокручивается вовсе — там крутится страница, и это ничего
- * не делает.
- */
+// Scroll `main` when the wheel is over the popup header or action bar.
 addEventListener(
   'wheel',
   (event) => {
     const main = appRoot.querySelector('main')
     if (!main || main.contains(event.target)) return
 
-    // deltaMode: 0 — пиксели, 1 — строки, 2 — страницы. Строки шлёт Firefox.
+    // deltaMode: 0 pixels, 1 lines (Firefox), 2 pages.
     const step = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? main.clientHeight : 1
     main.scrollTop += event.deltaY * step
   },
   { passive: true }
 )
 
-/**
- * Собрать экран: шапка, прокручиваемое тело, прилипшие снизу действия.
- *
- * `back` — стрелка «назад» в шапке, перед знаком; Esc — то же. `actions` —
- * крупные кнопки, обычно одна главная. `links` — строка мелких действий под
- * ними: отмена, запасной ход.
- */
 function screen({ body, actions = [], links = [], back }) {
   const buttons = actions.filter(Boolean)
   const small = links.filter(Boolean)
@@ -145,17 +122,11 @@ function screen({ body, actions = [], links = [], back }) {
   )
 }
 
-/** «Назад» текущего экрана — для Esc. Экран без «назад» его обнуляет. */
 let goBack = null
 
-/**
- * Что сказать app, если человек уходит на главную, не дойдя до конца запроса.
- * По умолчанию — «отменено»: иначе app ждёт ответа, пока окно не закроют.
- * Экран, которому есть что ответить и так (режим подписи), ставит своё.
- */
+// What to tell the app when the user goes home mid-request; defaults to cancelled.
 let leaveRequest = null
 
-/** Знак в шапке — на главную из любого экрана, с ответом app, если он ждёт. */
 function goHome() {
   const leave = leaveRequest
   leaveRequest = null
@@ -163,38 +134,21 @@ function goHome() {
   homeScreen()
 }
 
-/**
- * Esc — назад, если экрану есть куда. Не из поля ввода: там Esc жмут, чтобы
- * снять фокус, а уход с экрана стёр бы вставленные слова или ключ.
- */
+// Esc goes back, but not from inputs or dialogs: leaving would wipe pasted words or keys.
 addEventListener('keydown', (event) => {
-  // Открытое окно подтверждения закрывает Esc само — экран под ним остаётся.
   if (event.key !== 'Escape' || !goBack || event.target.closest?.('input, textarea, dialog')) return
   event.preventDefault()
   goBack()
 })
 
-/**
- * Любая ошибка на экране проходит здесь: нода объясняется, остальное как есть.
- *
- * Отмена Face ID — не сбой: человек сам нажал «не надо». Технический хвост
- * браузера («see w3.org/TR/webauthn…») ему тут ни к чему.
- */
 function failure(error) {
   const { title, detail, kind } = explain(error)
   return errorBox(title, kind === 'info' ? null : detail, kind)
 }
 
 /**
- * Экран, на котором идёт дело: Face ID, нода, транзакция.
- *
- * Пока идёт — только статус. Упало — объяснение и выход: «Try again» главной
- * кнопкой, назад и отмена ссылками. Экрана, на котором после ошибки нечего
- * нажать, быть не должно: окно-попап без кнопок — тупик, из которого человек
- * выходит, только закрыв его, и не понимает, что случилось с запросом.
- *
- * `run(work)` сам показывает успех и уходит дальше; `work` — стопка под
- * заголовком, куда он пишет ход дела.
+ * A screen that runs work: passkey, node, transaction. A failure always leaves
+ * Try again and a way out — a popup with no buttons is a dead end.
  *
  * @param {{ title: string | (string | Node)[], sub?: string, lead?: HTMLElement, busy: string,
  *   run: (work: HTMLElement) => Promise<unknown>, back?: () => unknown,
@@ -212,12 +166,10 @@ async function attempt(job) {
     await run(work)
   } catch (error) {
     work.replaceChildren(failure(error))
-    // Назад — только после ошибки: посреди Face ID уходить некуда.
     draw([button('Try again', () => attempt(job), 'primary')], [cancel], back)
   }
 }
 
-/** Ответить app отказом и закрыть окно — одна и та же ссылка на многих экранах. */
 const cancelLink = (reply, text = 'Cancel', error = 'Cancelled by the user') => [
   text,
   () => {
@@ -234,41 +186,26 @@ const appName = (origin) => {
   }
 }
 
-/**
- * Сеть текущего экрана.
- *
- * Запрос называет её по имени, vault берёт параметры из своего реестра. Открыт
- * руками — сети никто не назвал, и до первого найденного аккаунта стоит дефолт.
- */
+// Current network: named by the request, or the default when opened directly.
 let chain = DEFAULT_CHAIN
 
 const explorerLink = (txid, on = chain) => link('View transaction', `${on.explorer}/transaction/${txid}`)
 
-/** Ключ в строку заголовка: начало и хвост — по ним его и опознают. */
-/** Время по часам, без даты: срок транзакции — минуты, не дни. */
 const clock = (date) => date.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
 
 const shortKey = (key) => `${key.slice(0, 16)}…${key.slice(-6)}`
 
-// ─────────────────────────────────────────────── аккаунт
+// ─────────────────────────────────────────────── accounts
 
 async function homeScreen() {
   const passkeys = loadPasskeys()
   if (!passkeys.length) return welcomeScreen()
 
-  // Операции над ключами — у первого passkey: остальные появляются, когда в
-  // этом браузере заводят или находят ещё один.
   const primary = passkeys[0]
 
   screen({ body: [accountsSection(passkeys), securitySection(primary), techDetails(primary)] })
 }
 
-/**
- * Первый запуск: ключа здесь нет. Завести, найти с другого устройства или вернуть по словам.
- *
- * `then` — куда после создания passkey: по умолчанию ключи для нового аккаунта,
- * а по ссылке «импортировать» из app — сразу импорт.
- */
 function welcomeScreen({ then = (passkey, root) => newAccountScreen(passkey, root) } = {}) {
   const out = stack([])
 
@@ -280,8 +217,6 @@ function welcomeScreen({ then = (passkey, root) => newAccountScreen(passkey, roo
         text: 'No extension, no phrase to type. A passkey is made on this device and never leaves it.',
       }),
       options([
-        // Биометрию проверяет устройство, и наружу она не выходит — это стоит
-        // сказать прямо: «Face ID» на кнопке читается как «сканируют лицо».
         tile({
           icon: ICONS.lock,
           tone: 'mint',
@@ -307,13 +242,7 @@ function welcomeScreen({ then = (passkey, root) => newAccountScreen(passkey, roo
   })
 }
 
-/**
- * Завести passkey: первый Face ID создаёт ключ, второй выводит корень.
- *
- * Ключ без PRF в кеш не попадает: без корня нет ни 24 слов, ни автоподписи, и
- * такой ключ — обещание, которое не выполнится (ADR-0010 §2). Слова — сразу,
- * обязательно: `then` зовётся только после «I saved it».
- */
+// Two prompts: create the key, then derive the root. Without PRF nothing is cached (ADR-0010 §2).
 async function createKeyFlow(out, then) {
   out.replaceChildren(status('Creating the key — confirm with your passkey'))
 
@@ -330,7 +259,6 @@ async function createKeyFlow(out, then) {
   }
 }
 
-/** Passkey с другого устройства: кеша нет, ключ и аккаунты находятся по чейну (§7). */
 async function findKeyFlow(out, then, onFail = (error) => out.replaceChildren(failure(error))) {
   out.replaceChildren(status('Pick your key — confirm with your passkey'))
 
@@ -343,10 +271,7 @@ async function findKeyFlow(out, then, onFail = (error) => out.replaceChildren(fa
   }
 }
 
-/**
- * 24 слова. «Copy» и галка «I saved it» — без ввода слов обратно: проверка,
- * которую проходят раздражённым, стоит больше, чем ловит (ADR-0010 §3).
- */
+// No re-typing check for the words: it annoys more than it catches (ADR-0010 §3).
 function wordsScreen(root, { title = 'Your recovery phrase', sub, next }) {
   const go = button('Continue', next, 'primary')
   go.disabled = true
@@ -367,13 +292,8 @@ function wordsScreen(root, { title = 'Your recovery phrase', sub, next }) {
   })
 }
 
-/**
- * Ключи для нового аккаунта: owner — из 24 слов, active — Face ID.
- *
- * Спонсора, который заводит аккаунт и платит за RAM, ещё нет — поэтому ключи
- * показываются, а аккаунт заводится руками. Номер — первый свободный в сети:
- * занятый связал бы два аккаунта общим ключом.
- */
+// No sponsor creates accounts yet, so the keys are shown and the account is made by hand.
+// The owner index is the first free one: a used index would share a key between accounts.
 function newAccountScreen(passkey, root) {
   const rows = stack([status('Picking keys for each network')])
 
@@ -408,19 +328,9 @@ function newAccountScreen(passkey, root) {
   ).then((sections) => rows.replaceChildren(...sections))
 }
 
-/**
- * Аккаунты под ключами этого устройства — во всех сетях сразу.
- *
- * Один passkey годится всем Antelope-сетям, а аккаунтов у человека может быть
- * несколько: заведённый здесь и перенесённые из других кошельков. Поэтому
- * список компактный — строка на аккаунт: имя, баланс, сеть и метка «Fast»,
- * если быстрые сделки включены. Настройки аккаунта раскрываются по клику и
- * открыты по одному: всё сразу — это стена одинаковых тумблеров.
- */
 function accountsSection(passkeys) {
   const primary = passkeys[0]
   const count = el('span', { className: 'list-count' })
-  // Человек приходит со своим кошельком — кнопка говорит его словами, а не «Add».
   const add = button('', () => addAccountScreen(primary), 'accent')
   add.replaceChildren(icon(ICONS.plus, 12), el('span', { textContent: 'Import wallet' }))
 
@@ -431,7 +341,6 @@ function accountsSection(passkeys) {
     count.textContent = entries.length ? String(entries.length) : ''
 
     if (!entries.length) {
-      // Добавить — и есть всё, что здесь можно сделать: пути сразу на экране.
       const out = stack([])
       body.replaceChildren(
         el('div', { className: 'empty' }, [
@@ -446,21 +355,19 @@ function accountsSection(passkeys) {
 
     chain = (entries.find((entry) => entry.passkey === primary) ?? entries[0]).chain
 
-    // Перерисовка не должна захлопывать аккаунт, который человек держит открытым.
     const openId = body.querySelector('.acct.open')?.dataset.id
     body.replaceChildren(...byChain(entries).map(([network, group]) => chainGroup(network, group)))
     const reopen = openId ? body.querySelector(`.acct[data-id="${openId}"]`) : entries.length === 1 ? body.querySelector('.acct') : null
     if (reopen) setOpen(reopen, true)
   }
 
-  // Сначала — что было в прошлый раз, сразу. Потом чейн: совпало — ничего не
-  // трогаем, строки сами тихо сверяют баланс и уровень; нет — рисуем заново.
+  // Cache first, then the chain; re-render only if the list changed.
   const cached = fromCache(passkeys)
   if (cached.length) render(cached)
   else body.replaceChildren(card([rowSkeleton(), rowSkeleton()]))
 
-  // Сеть, которая не ответила, — не «аккаунтов там больше нет»: её аккаунты
-  // берутся из кеша, а сам кеш неполным списком не перезаписывается.
+  // A network that did not answer keeps its cached accounts, and a partial list
+  // never overwrites the cache.
   const failed = new Set()
   findAccounts(passkeys, failed)
     .then((found) => {
@@ -469,7 +376,6 @@ function accountsSection(passkeys) {
       if (!cached.length || !sameAccounts(entries, cached)) render(entries)
     })
     .catch((error) => {
-      // Есть что показать из кеша — показываем его, а не одну ошибку.
       if (!cached.length) body.replaceChildren(failure(error))
     })
 
@@ -492,7 +398,6 @@ const toCache = (entry) => ({
   passkey: entry.passkey.publicKey,
 })
 
-/** Аккаунты из кеша — только те, чья сеть и чей passkey всё ещё здесь. */
 function fromCache(passkeys) {
   return cachedAccounts()
     .map((entry) => ({
@@ -504,27 +409,23 @@ function fromCache(passkeys) {
     .filter((entry) => entry.chain && entry.passkey)
 }
 
-/** Тот же набор аккаунтов, в любом порядке: порядок задаёт отрисовка, а не источник. */
 const sameAccounts = (a, b) => {
   const ids = (list) => list.map((entry) => JSON.stringify(toCache(entry))).sort().join('|')
   return ids(a) === ids(b)
 }
 
-/** Строка-заглушка, пока аккаунты едут с чейна: та же высота, что у настоящей. */
 const rowSkeleton = () =>
   el('div', { className: 'acct-head' }, [
     avatar(null),
     el('div', { className: 'acct-body' }, [skeleton(110, 14), el('div', { className: 'acct-meta' }, [skeleton(90, 10)])]),
   ])
 
-/** Аккаунты по сетям, в порядке реестра: сеть — заголовок, её аккаунты — под ним. */
 function byChain(entries) {
   return Object.values(CHAINS)
     .map((network) => [network, entries.filter((entry) => entry.chain.chainId === network.chainId)])
     .filter(([, group]) => group.length)
 }
 
-/** Сеть: логотип и имя над её аккаунтами. В самих строках сеть не повторяется. */
 const chainGroup = (network, entries) =>
   el('div', { className: 'chain-group' }, [
     el('div', { className: 'chain-head' }, [
@@ -535,15 +436,9 @@ const chainGroup = (network, entries) =>
   ])
 
 /**
- * Аккаунт — это сеть, имя и permission, которым под ним подписывает passkey.
+ * Accounts of these passkeys on every network, one row per account.
  *
- * Дубли схлопываются: два passkey на одном аккаунте, owner и active у одного.
- * Берётся рабочий permission сети (active) — им торгуют; owner — только если
- * больше ничего нет.
- *
- * `failed` — куда сложить `chainId` сетей, которые не ответили (см. `accountsEverywhere`).
- *
- * @param {Set<string>} [failed]
+ * @param {Set<string>} [failed] collects chainIds of networks that did not answer
  * @returns {Promise<{ chain, name: string, permission: string, passkey }[]>}
  */
 async function findAccounts(passkeys, failed) {
@@ -556,7 +451,6 @@ async function findAccounts(passkeys, failed) {
   return oneRowPerAccount(found.flat())
 }
 
-/** То же, что `findAccounts`, но в одной сети: окну запроса другие не нужны. */
 async function accountsOn(network, passkeys) {
   const found = await Promise.all(
     passkeys.map(async (passkey) =>
@@ -579,11 +473,7 @@ function oneRowPerAccount(entries) {
   return [...byAccount.values()]
 }
 
-/**
- * Строка аккаунта: свёрнута — кто и сколько; раскрыта — быстрые сделки и
- * отвязка. Метка «Fast» в свёрнутой строке берётся из той же проверки по
- * чейну, что и тумблер, — два источника разошлись бы.
- */
+// The "Fast" chip and the toggle come from one on-chain check, so they never disagree.
 function accountRow(entry) {
   const id = accountId(entry.chain.chainId, entry.name)
   const known = cachedValue('balances', id)
@@ -595,7 +485,6 @@ function accountRow(entry) {
       rememberValue('balances', id, value)
       balance.replaceChildren(formatBalance(value))
     })
-    // Нода не ответила — старый баланс лучше прочерка.
     .catch(() => known || balance.replaceChildren('—'))
 
   const node = el('div', { className: 'acct' })
@@ -612,15 +501,13 @@ function accountRow(entry) {
 
   head.onclick = () => {
     const open = !node.classList.contains('open')
-    // Открыт один аккаунт на весь список, а не один на сеть.
     for (const other of document.querySelectorAll('.acct.open')) setOpen(other, false)
     setOpen(node, open)
   }
 
   node.append(
     head,
-    // Панель → обрезка → содержимое: высоту анимирует панель, обрезка прячет
-    // то, что ещё не выехало, а отступы живут у содержимого (см. styles.css).
+    // Panel animates height, clip hides overflow, body holds padding (see styles.css).
     el('div', { className: 'acct-panel' }, [
       el('div', { className: 'acct-panel-clip' }, [
         el('div', { className: 'acct-panel-body' }, [
@@ -642,13 +529,7 @@ function setOpen(node, open) {
   node.querySelector('.acct-head').ariaExpanded = String(open)
 }
 
-/**
- * Что снимет отвязка — и можно ли её вообще подписать.
- *
- * Снимается ровно своё: passkey и ключ быстрых сделок этого браузера. Vault
- * знает их точно, угадывать по типу ключа не нужно. Всё остальное на
- * permission остаётся.
- */
+// Unlink removes only this browser's own keys: the passkey and its fast sign key.
 async function unlinkPlan(entry) {
   const [auth, hot, owner] = await Promise.all([
     permissionAuthority(entry.chain, entry.name, entry.permission),
@@ -666,28 +547,20 @@ async function unlinkPlan(entry) {
   return {
     auth,
     remove,
-    // Что останется на permission — показывается до кнопки: «не запрётся» ещё не
-    // значит «останется в твоих руках» (например, Fast-ключ другого браузера).
     stays: [
       ...auth.keys.filter((onChain) => !remove.includes(onChain.key)).map((onChain) => onChain.key),
       ...auth.accounts.map(({ permission }) => `${permission.actor}@${permission.permission}`),
     ],
-    // Снимается только с этого permission; на owner passkey остаётся и аккаунт вернёт.
     staysOnOwner: Boolean(owner?.keys.some((onChain) => onChain.key === entry.passkey.publicKey)),
     hot: hot && remove.includes(hot.publicKey) ? hot : null,
-    // Оставшееся не набирает порог — аккаунт заперся бы навсегда.
+    // Otherwise the account would be locked for good.
     locks: left < auth.threshold,
-    // Смену прав подписывает сам Face ID, и в одиночку ему нужен весь порог.
+    // The passkey signs the updateauth alone, so it needs the whole threshold.
     canSign: weightOf(entry.passkey.publicKey) >= auth.threshold,
   }
 }
 
-/**
- * Снять Face ID с аккаунта. Живёт только здесь: смену прав vault от app не
- * принимает, и кнопки «отвязать» в приложении нет.
- *
- * Невозможное отсекается до кнопки, а не ошибкой ноды после Face ID.
- */
+// Unlink lives only here: the vault never accepts permission changes from the app.
 function unlinkScreen(entry) {
   const title = `Remove passkey from ${entry.name}`
   const sub = `${entry.chain.name} · ${entry.permission}`
@@ -755,10 +628,6 @@ function unlinkScreen(entry) {
     })
 }
 
-/**
- * Чей это ключ — по виду, чтобы список «что останется» читался без знания форматов:
- * `PUB_WA_` — passkey, `PUB_R1_` — Fast-ключ какого-то браузера, остальное — кошелёк.
- */
 function keyKind(key) {
   if (key.includes('@')) return 'account'
   if (key.startsWith('PUB_WA_')) return 'passkey'
@@ -791,37 +660,23 @@ function unlink(entry, plan) {
   })
 }
 
-/**
- * Уровень подписи одного аккаунта в этом браузере:
- *
- *   passkey — каждая подпись через устройство;
- *   fast    — кнопка в окне Alcor Signer (на permission стоит ключ браузера);
- *   auto    — сразу, без окна и клика (тот же ключ, флаг на его записи).
- *
- * Fast и auto — один ключ на чейне, поэтому переход между ними локальный и
- * бесплатный. С passkey и на passkey — транзакция, её подписывает passkey.
- *
- * Уровень читается с чейна и из браузера; сразу после смены — наоборот: ответ
- * ноды на нашу же транзакцию и есть новое состояние, а индексы догоняют позже.
- *
- * `onState` узнаёт каждое устоявшееся положение — им живёт метка в строке.
- */
+// Signing level of an account in this browser:
+//
+//   passkey  every signature through the device
+//   fast     a button in the Signer window (a browser key is on the permission)
+//   auto     no window, no click (the same key, a flag on its record)
+//
+// Fast ↔ auto is local and free; to or from passkey is a transaction the passkey signs.
 const LEVELS = [
   ['passkey', 'Passkey'],
   ['fast', 'Fast'],
   ['auto', 'Auto'],
 ]
 
-/** Режим одним словом — на экране подписи, пока табы свёрнуты. */
 const LEVEL_NAME = { passkey: 'Passkey', fast: 'Fast sign', auto: 'Auto sign' }
 const LEVEL_ICON = { passkey: ICONS.key, fast: ICONS.bolt, auto: ICONS.auto }
-// Auto — тёплым: смелее Fast, и это должно быть видно, но без тревоги.
 const LEVEL_TONE = { passkey: '', fast: 'mint', auto: 'amber' }
 
-/**
- * Подсказка к режиму при наведении: как он работает и, для Auto, одна строка
- * осторожности. На тач-экране её нет — там объясняет строка под табами.
- */
 const LEVEL_TIP = {
   passkey: 'Every transaction asks for your passkey. The safest option.',
   fast: 'One click, no passkey — you still see every transaction before you confirm it.',
@@ -829,16 +684,9 @@ const LEVEL_TIP = {
 }
 const AUTO_CAUTION = 'Best kept to your own device.'
 
-/**
- * Что человек подтверждает, выбирая Auto. Без страшилок: окно — не защита от
- * Alcor, а второй взгляд на свою же сделку, и Auto его убирает только для сделок
- * Alcor (`isAlcorTrade`). Показывается в момент выбора — на главной перед
- * включением, в окне подписи под табами.
- */
 const AUTO_NOTICE =
   'Trades on Alcor go through right away, without this second check. Anything else still opens here for you to confirm.'
 
-/** Режимы для `modePicker` — на экране подписи и при привязке. */
 const levelOptions = () =>
   LEVELS.map(([level]) => ({
     value: level,
@@ -857,7 +705,6 @@ const levelTip = (level) => [
   level === 'auto' ? el('div', { className: 'tip-caution', textContent: AUTO_CAUTION }) : null,
 ]
 
-// Под переключателем — не название, а последствие текущего положения.
 const LEVEL_TEXT = {
   passkey: 'Every signature asks for your passkey',
   fast: 'Signing confirms with a button in the Alcor Signer window',
@@ -867,10 +714,9 @@ const LEVEL_TEXT = {
 function signingPanel(entry, { onState, onRemove }) {
   const box = el('div', { className: 'level' })
   const out = stack([], { tight: true })
-  // Без `onRemove` — без кнопки: в окне режима из app удалять ключ не за чем.
   const remove = () => (onRemove ? inlineAction('Remove passkey', ICONS.ban, onRemove, 'quiet') : null)
 
-  // Ключ без passkey на owner значил бы, что владелец аккаунта — браузер.
+  // A browser key on owner would make the browser the account's owner.
   if (entry.permission !== entry.chain.permission) {
     box.replaceChildren(
       el('p', { className: 'level-text', textContent: `Passkey only — it is on ${entry.permission}, apps sign with ${entry.chain.permission}` }),
@@ -883,7 +729,6 @@ function signingPanel(entry, { onState, onRemove }) {
   const known = cachedValue('levels', id)
   let level = known ?? 'passkey'
 
-  // Подпись раздела и табы — одной строкой; под ними последствие и действия.
   const render = (busyText) => {
     if (!busyText) onState(level)
 
@@ -905,13 +750,9 @@ function signingPanel(entry, { onState, onRemove }) {
     )
   }
 
-  // Поколение: каждая проверка и каждое переключение берут новый номер. Проверка,
-  // начатая до переключения, отвечает позже — и её ответ уже устарел: человек
-  // успел выбрать сам, и откатывать его выбор нельзя.
+  // Each check and switch takes a new generation: a stale check must not undo the user's choice.
   let generation = 0
 
-  // Известен уровень с прошлого раза — показываем его сразу и сверяем молча;
-  // «Checking on chain…» — только когда показать нечего.
   async function refresh({ quiet = false } = {}) {
     const mine = ++generation
     if (!quiet) render('Checking on chain…')
@@ -920,7 +761,7 @@ function signingPanel(entry, { onState, onRemove }) {
     try {
       next = await signingLevel(entry)
     } catch {
-      // Нода не ответила — уровень неизвестен. Показываем что есть, в кеш догадку не пишем.
+      // The node did not answer: show what we have, don't cache a guess.
       if (mine === generation && !quiet) render()
       return
     }
@@ -960,9 +801,6 @@ function signingPanel(entry, { onState, onRemove }) {
     apply(next)
   }
 
-  // Auto — только после того, как человек прочитал, что он включает: окном
-  // поверх экрана с одной главной кнопкой. «Not now», Esc или клик мимо —
-  // табы возвращаются на прежний режим.
   async function confirmAuto() {
     const yes = await confirmDialog({
       icon: ICONS.auto,
@@ -981,7 +819,7 @@ function signingPanel(entry, { onState, onRemove }) {
       return run('Turning off — confirm with your passkey', () => disableFastSign(entry), done('Every signature asks for your passkey again'), 'passkey')
     }
 
-    // Ключ уже стоит — Fast ↔ Auto меняет только флаг в браузере.
+    // The key is already on chain: fast ↔ auto only flips a local flag.
     if (level !== 'passkey') {
       return run('Saving', () => setAutoSign(scope, next === 'auto').then(() => null), done(next === 'auto' ? 'Auto sign is on' : 'Fast sign is on'), next)
     }
@@ -998,7 +836,6 @@ function signingPanel(entry, { onState, onRemove }) {
     )
   }
 
-  // Замена ключа — на случай, если его могли скопировать: старый перестаёт работать сразу.
   const rotate = () =>
     run('Replacing the key — confirm with your passkey', () => rotateFastSign(entry), done('This browser has a new key — the old one no longer works'), level)
 
@@ -1013,7 +850,6 @@ function signingPanel(entry, { onState, onRemove }) {
 
 const scopeOfEntry = (entry) => scopeOf(entry.chain, entry.name, entry.permission)
 
-/** Уровень подписи аккаунта: ключ браузера есть и стоит на чейне — fast или auto, иначе passkey. */
 async function signingLevel(entry) {
   const key = await loadHotKey(scopeOfEntry(entry))
   if (!key) return 'passkey'
@@ -1024,35 +860,28 @@ async function signingLevel(entry) {
   return key.auto ? 'auto' : 'fast'
 }
 
-/** Случайный номер ключа, кроме `except`: восстановлению номер не важен — чейн покажет, какой стоит. */
+// Random, so re-enabling after a theft doesn't bring the stolen key back; recovery checks every slot.
 function randomSlot(except) {
   const free = [...Array(HOT_KEY_SLOTS).keys()].filter((n) => n !== except)
   return free[crypto.getRandomValues(new Uint32Array(1))[0] % free.length]
 }
 
 /**
- * Включить автоподпись. ADR-0010 §4.
+ * Turn on fast sign (ADR-0010 §4).
  *
- * Первый Face ID — секрет области из PRF, из него двадцать кандидатов. Один из
- * них уже на чейне — это тот же ключ после очистки браузера: забираем его, без
- * транзакции. Нет — берём случайный номер (повторное включение после кражи
- * не вернёт украденный ключ, а восстановлению номер не важен) и вторым Face ID
- * ставим его на permission рядом с остальными ключами.
+ * A PRF candidate already on chain (the same key after clearing the browser) is
+ * adopted without a transaction; otherwise a random one is added. The key is stored
+ * only after the node accepts the transaction.
  *
- * Ключ импортируется только после того, как нода приняла транзакцию: иначе в
- * браузере остался бы ключ, которого на аккаунте нет.
+ * `derived` is a scope secret from the touch that signed the trade; the caller wipes it.
  *
- * `derived` — секрет области, уже выведенный тем же касанием, что подписало
- * сделку: тогда первого Face ID здесь нет. Затирает его вызывающий.
- *
- * @returns {Promise<string | null>} txid, или null — ключ уже стоял и восстановлен
+ * @returns {Promise<string | null>} txid, or null when the key was already on chain
  */
 async function enableFastSign(entry, derived = null) {
   const auth = await permissionAuthority(entry.chain, entry.name, entry.permission)
   if (!auth) throw new Error(`${entry.name} has no ${entry.permission} permission on ${entry.chain.name}`)
 
-  // Ключ быстрых сделок ставит сам Face ID — значит он должен подписывать один.
-  // Новый ключ встанет с весом порога (`editKeysAction`) и тоже будет один.
+  // The passkey adds the key itself, so it must be able to sign alone.
   if (!signsAlone(auth, entry.passkey.publicKey)) {
     throw new Error(`The passkey alone cannot sign for ${entry.name}@${entry.permission} — link it again to raise its weight`)
   }
@@ -1082,10 +911,6 @@ async function enableFastSign(entry, derived = null) {
   }
 }
 
-/**
- * Заменить ключ этого браузера другим номером — если есть подозрение, что его
- * скопировали. Одна транзакция: старый снят, новый поставлен.
- */
 async function rotateFastSign(entry) {
   const scope = scopeOfEntry(entry)
   const current = await loadHotKey(scope)
@@ -1108,13 +933,7 @@ async function rotateFastSign(entry) {
   }
 }
 
-/**
- * Снять ключ браузера с permission аккаунта и стереть его здесь.
- *
- * Снимается только он: чужие ключи на permission не трогаются.
- *
- * @returns {Promise<string | null>} txid, или null — на чейне ключа уже не было
- */
+/** @returns {Promise<string | null>} txid, or null when the key was no longer on chain */
 async function disableFastSign(entry) {
   const scope = scopeOfEntry(entry)
   const key = await loadHotKey(scope)
@@ -1127,13 +946,11 @@ async function disableFastSign(entry) {
     ])
   }
 
-  // Ключ, снятый с аккаунта, но оставшийся в браузере, — мусор, который выглядит
-  // как рабочий. Убираем сразу, чтобы состояние было одно, а не два.
+  // Forget it here either way: a key off the account but still in the browser looks usable.
   await forgetHotKey(scope)
   return txid
 }
 
-/** Подписать и отправить со своего RPC. `sign` — passkey'ем или K1-ключом. */
 async function submitWith(on, sign, actions) {
   const built = await buildTransaction(on, actions)
   return pushTransaction(on, await sign(built.transaction, built.chainId))
@@ -1144,13 +961,8 @@ const withKey = (privateKey) => (transaction, chainId) => signTransactionWithKey
 
 const submit = (on, passkey, actions) => submitWith(on, withPasskey(passkey), actions)
 
-// ─────────────────────────────────────────────── ключи
+// ─────────────────────────────────────────────── keys
 
-/**
- * Защита — раз в жизни, поэтому ниже списка и тише его: на главной должно
- * стоять то, чем пользуются. Импорт отсюда ушёл в «Add» — это не защита, а
- * способ завести аккаунт.
- */
 const securitySection = (passkey) =>
   section('security', [
     options([
@@ -1169,13 +981,6 @@ const securitySection = (passkey) =>
     ]),
   ])
 
-/**
- * Добавить аккаунт: три пути, и каждый говорит, чем кончится.
- *
- * Привязка — первой: приватный ключ не покидает кошелёк, старый кошелёк
- * продолжает работать, и откатить её проще всего. Импорт — для тех, кто
- * уходит с кошелька совсем. Новый — для тех, у кого аккаунта нет.
- */
 function addAccountScreen(passkey) {
   const out = stack([])
 
@@ -1192,7 +997,7 @@ const addChoices = (passkey, out) =>
         icon: ICONS.link,
         tone: 'mint',
         title: 'Link from your wallet',
-        // Anchor не подписывает смену ключей с сайта — ему сюда не надо.
+        // Anchor refuses key changes from a website.
         sub: 'Your wallet keeps working. Not for Anchor',
         onclick: () => linkGuideScreen(passkey),
       }),
@@ -1212,7 +1017,6 @@ const addChoices = (passkey, out) =>
     { tight: true }
   )
 
-/** Ключи для нового аккаунта: owner берётся из 24 слов, поэтому сначала Face ID. */
 async function createAccountFlow(passkey, out) {
   out.replaceChildren(status('Confirm with passkey'))
 
@@ -1223,11 +1027,7 @@ async function createAccountFlow(passkey, out) {
   }
 }
 
-/**
- * Привязка идёт из app: подписывает кошелёк, которым человек туда вошёл, а
- * vault лишь отдаёт ему публичные ключи (`enrollScreen`). Здесь — только куда
- * идти и что там нажать.
- */
+// Linking runs in the app: its wallet signs, the vault only hands out public keys (`enrollScreen`).
 function linkGuideScreen(passkey) {
   screen({
     body: [
@@ -1239,7 +1039,6 @@ function linkGuideScreen(passkey) {
       ]),
       options([
         tile({ icon: ICONS.shield, tone: 'mint', title: 'Your wallet keeps working', sub: 'A passkey is added next to it. Nothing is removed' }),
-        // Anchor отвечает на смену ключей с сайта отказом — привязка для него тупик.
         tile({
           icon: ICONS.key,
           title: 'Using Anchor?',
@@ -1254,14 +1053,7 @@ function linkGuideScreen(passkey) {
   })
 }
 
-/**
- * Фраза восстановления: показать и проверить, какие аккаунты она вернёт.
- *
- * Аккаунт возвращается словами, только если на его owner стоит ключ из них.
- * Где не стоит, но owner подписывает этот passkey (аккаунты прототипа), —
- * ставим сразу. Где owner у другого кошелька — только через импорт его ключом.
- */
-/** `back` — куда вернуться: на главную или в окно аккаунта, открытое из app. */
+// The words restore an account only if its owner has a key from them; add it where the passkey signs owner.
 function phraseScreen(passkey, { back = homeScreen } = {}) {
   const out = stack([])
   const step = stack([])
@@ -1309,7 +1101,6 @@ function phraseScreen(passkey, { back = homeScreen } = {}) {
   draw([button('Show with passkey', reveal, 'primary')], () => back())
 }
 
-/** Какие аккаунты вернут слова, и кнопка там, где это можно исправить здесь же. */
 async function coverageSection(passkey, root, out) {
   const [entries, covered] = await Promise.all([findAccounts([passkey]), rootAccounts(root)])
   const recoverable = new Set(covered.accounts.map((entry) => `${entry.chain.chainId}:${entry.name}`))
@@ -1317,11 +1108,9 @@ async function coverageSection(passkey, root, out) {
   const coveredRow = (entry) =>
     tile({ icon: ICONS.check, tone: 'mint', title: entry.name, sub: `${entry.chain.name} · comes back with these words` })
 
-  // Номера owner-ключей раздаются здесь, а не только по чейну: индекс
-  // `get_accounts_by_authorizers` догоняет с задержкой, и два аккаунта, покрытые
-  // подряд, получили бы один номер — а с ним один ключ на двоих.
-  // Номер занимается только после принятой транзакции: неудачная попытка не
-  // должна оставлять дыр — поиск по словам останавливается на пустых номерах.
+  // Owner indexes are handed out here too: `get_accounts_by_authorizers` lags, and two
+  // accounts covered in a row would share a key. An index is taken only after the
+  // transaction is accepted — recovery by words stops at the first gap.
   const taken = new Map()
   const allocate = async (chain) => {
     const free = (await nextFreeIndex(root, chain)).index
@@ -1334,16 +1123,13 @@ async function coverageSection(passkey, root, out) {
 
       const owner = await permissionAuthority(entry.chain, entry.name, 'owner').catch(() => null)
       if (owner?.keys.some((key) => key.key === passkey.publicKey)) {
-        // Слова встали — строка сразу становится «покрыт»: перечитать чейн тут же
-        // нельзя, индексы догоняют с задержкой, а ответ ноды и есть новое состояние.
         const row = tile({
           icon: ICONS.plus,
           tone: 'amber',
           title: entry.name,
           sub: `${entry.chain.name} · not covered yet — add the words to it`,
           aside: icon(ICONS.chevron, 14),
-          // Пока транзакция в пути, строка заперта: второй клик послал бы второй
-          // `updateauth` со старым снимком owner.
+          // Locked while in flight: a second click would send another updateauth with a stale owner.
           onclick: async () => {
             row.disabled = true
             const key = await attachRecovery(entry, owner, allocate, out)
@@ -1374,10 +1160,9 @@ async function coverageSection(passkey, root, out) {
 }
 
 /**
- * Поставить owner-ключ из слов рядом с тем, что там уже стоит. Подписывает
- * passkey — он на owner. `allocate` выдаёт номер ключа (см. `coverageSection`).
+ * Add an owner key from the words next to the existing ones; the passkey signs as owner.
  *
- * @returns {Promise<{ index: number } | null>} поставленный ключ, или null — не вышло
+ * @returns {Promise<{ index: number } | null>} the added key, or null on failure
  */
 async function attachRecovery(entry, owner, allocate, out) {
   out.replaceChildren(status('Adding the words to the account — confirm with your passkey'))
@@ -1397,17 +1182,13 @@ async function attachRecovery(entry, owner, allocate, out) {
 }
 
 /**
- * Переезд аккаунта на новый passkey и новый корень. ADR-0010 §8.
+ * Move an account to a new passkey and root (ADR-0010 §8), one transaction:
  *
- * Общий для замены ключа (старый passkey под рукой) и восстановления по словам
- * (старого passkey нет). Одна транзакция на аккаунт:
+ *   active: + new passkey; − old passkey and this browser's key
+ *   owner:  + new root key; − old root key and old passkey
  *
- *   active: + новый Face ID; − старый Face ID и ключ этого браузера
- *   owner:  + ключ из нового корня; − ключ из старого корня и старый Face ID
- *
- * Всё прочее на permission остаётся. Owner меняется, только если подписываем
- * owner'ом; слинкованный аккаунт (owner у другого кошелька) получает новый
- * Face ID на active — подписью старого, если он есть.
+ * Owner changes only when we sign as owner; a linked account (owner is another
+ * wallet) only gets the new passkey on active.
  *
  * @param {{ chain, name: string, oldOwnerKey?: object, oldPasskey?: object, newPasskey, newOwnerKey: object }} move
  */
@@ -1451,12 +1232,8 @@ async function moveAccount({ chain: on, name, oldOwnerKey, oldPasskey, newPasske
   return { txid, owner: signer.by === 'owner' }
 }
 
-/**
- * Номера owner-ключей нового корня: тот же номер, что был у аккаунта в старом,
- * иначе — следующий после всех известных в этой сети. Считается локально, а
- * не по чейну: индекс `get_accounts_by_authorizers` догоняет с задержкой, и два
- * аккаунта, переезжающих подряд, получили бы один номер.
- */
+// Owner indexes of the new root, counted locally: the chain index lags, and accounts
+// moved in a row would get the same one.
 function indexAllocator(known) {
   const next = new Map()
   for (const { chain: on, index } of known) next.set(on.chainId, Math.max(next.get(on.chainId) ?? 0, index + 1))
@@ -1469,7 +1246,6 @@ function indexAllocator(known) {
   }
 }
 
-/** Переезд списка аккаунтов с отчётом по каждому: один упавший не отменяет остальных. */
 async function moveAll(accounts, { oldPasskey, newPasskey, newRoot }) {
   const allocate = indexAllocator(accounts.filter((entry) => entry.key).map((entry) => ({ chain: entry.chain, index: entry.key.index })))
   const results = []
@@ -1510,13 +1286,6 @@ function moveReport(results) {
   )
 }
 
-/**
- * Замена Face ID ключа: новый passkey, новый корень, новые слова (§8).
- *
- * Старый passkey под рукой — им и старым корнем подписывается переезд. Касаний
- * много, и это честно: операция раз в жизни, и каждое касание — отдельное
- * согласие на отдельную вещь.
- */
 function replaceKeyScreen(passkey) {
   const out = stack([])
 
@@ -1575,7 +1344,6 @@ function confirmMove(passkey, next, newRoot) {
   })
 }
 
-/** Аккаунты корня и аккаунты passkey — один список, без дублей; ключ корня сохраняется. */
 function mergeAccounts(fromRoot, fromPasskey) {
   const byId = new Map()
   for (const entry of [...fromRoot, ...fromPasskey]) {
@@ -1585,13 +1353,6 @@ function mergeAccounts(fromRoot, fromPasskey) {
   return [...byId.values()]
 }
 
-/**
- * Восстановление по 24 словам — passkey потерян (§8).
- *
- * Старые слова дают старые owner-ключи; новый passkey — новый корень и новые
- * слова. Слинкованные аккаунты (owner у другого кошелька) словами не
- * возвращаются: их владелец — тот кошелёк.
- */
 function restoreScreen() {
   const out = stack([])
   const input = secretInput({ placeholder: '24 words, separated by spaces', multiline: true })
@@ -1683,22 +1444,11 @@ function restoreScreen() {
 }
 
 /**
- * Импорт аккаунта приватным ключом — только Antelope, только здесь (§6a).
+ * Where an import came from and where it goes after.
  *
- * Ключ нужен на одну транзакцию: он ставит Face ID и горячий ключ на active,
- * а если он от owner — ещё и ключ из 24 слов на owner. Потом забывается.
- * Горячим он не становится никогда: он K1 (не сделать неэкспортируемым), не из
- * нашего PRF (не восстановить) и чужой (неизвестно, где побывал).
- */
-/**
- * Откуда пришёл импорт и куда после него.
- *
- * Без `flow` — импорт с главной, руками: сеть выбирает человек. С `flow` сеть
- * уже названа app, выбирать её нечего:
- * - `reply` — импорт по запросу app (`kind: 'import'`): по окончании окно
- *   отвечает и закрывается, и app сразу входит этим аккаунтом через Signer;
- * - `back` и `done` — импорт изнутри входа: назад — к входу, после — к нему же,
- *   где импортированный аккаунт уже в списке.
+ * No flow: from home, the user picks the network. With a flow the app named it:
+ * - `reply`: the app asked for it; answer and close, the app signs in with the account;
+ * - `back`, `done`: from inside sign-in; return there, where the account is now listed.
  *
  * @typedef {{
  *   reply?: (result: object) => void,
@@ -1709,7 +1459,8 @@ function restoreScreen() {
  */
 
 /**
- * Импорт аккаунта по его приватному ключу.
+ * Import an account by its private key (ADR-0010 §6a). The key signs one transaction and
+ * is forgotten. It never becomes a fast sign key: K1 is exportable and not from our PRF.
  *
  * @param {ImportFlow | null} flow
  */
@@ -1730,8 +1481,6 @@ function importScreen(passkey, flow = null) {
         : section('network', [segmented(Object.values(CHAINS).map((entry) => [entry, entry.name, () => chainLogo(entry)]), network, (entry) => (network = entry))]),
       section('private key', [
         input,
-        // Главное на экране после самого поля: куда вставлять можно. Адрес — тем
-        // же моноширинным, что в шапке, чтобы их было легко сверить.
         el('div', { className: 'hint safe' }, [
           icon(ICONS.lock, 12),
           el('span', {}, [
@@ -1783,14 +1532,12 @@ function importScreen(passkey, flow = null) {
 function importConfirm(passkey, on, privateKey, publicKey, found, flow = null) {
   const out = stack([])
 
-  // Аккаунт — один раз, с самым сильным permission, который открывает ключ.
   const accounts = new Map()
   for (const entry of found) {
     if (!accounts.has(entry.name) || entry.permission === 'owner') accounts.set(entry.name, entry.permission)
   }
 
-  // App спросил про один аккаунт — отмечен он; остальные под этим ключом можно
-  // добавить галкой. Его под ключом нет — отмечены все, как с главной.
+  // The account the app asked about is checked; if this key doesn't control it, all are.
   const asked = flow?.account && accounts.has(flow.account) ? flow.account : null
   const chosen = new Set(asked ? [asked] : accounts.keys())
   let withFast = true
@@ -1806,8 +1553,6 @@ function importConfirm(passkey, on, privateKey, publicKey, found, flow = null) {
 
   screen({
     body: [
-      // Один аккаунт — его имя в заголовке, как на экране привязки; несколько —
-      // выбор ниже, галками.
       pageTitle(
         accounts.size === 1 ? ['Move ', accent([...accounts.keys()][0]), ' to a passkey'] : 'Move to a passkey',
         `${on.name} · key ${shortKey(publicKey)}`
@@ -1855,8 +1600,7 @@ function importConfirm(passkey, on, privateKey, publicKey, found, flow = null) {
     if (!names.length) return
 
     let root
-    // Секреты Fast sign живут до конца попытки и затираются в finally —
-    // упавшая транзакция не должна оставлять их в памяти.
+    // Wiped in finally: a failed transaction must not leave secrets in memory.
     const hotKeys = []
     try {
       const anyOwner = names.some((name) => accounts.get(name) === 'owner')
@@ -1867,8 +1611,7 @@ function importConfirm(passkey, on, privateKey, publicKey, found, flow = null) {
 
       const actions = []
       const notes = []
-      // Номера owner-ключей: первый свободный по чейну, дальше подряд — соседние
-      // аккаунты этой же транзакции чейн ещё не видит.
+      // First free index on chain, then sequential: the chain can't see this transaction's other accounts.
       let nextIndex = null
 
       for (const name of names) {
@@ -1880,7 +1623,6 @@ function importConfirm(passkey, on, privateKey, publicKey, found, flow = null) {
 
         const addActive = [passkey.publicKey]
 
-        // Ключ с весом 1 permission с порогом выше не подпишет — говорим, а не молчим.
         if (active.threshold !== 1) {
           notes.push(`${name}@${on.permission} needs ${active.threshold} signatures — the passkey alone cannot sign for it.`)
         }
@@ -1918,9 +1660,7 @@ function importConfirm(passkey, on, privateKey, publicKey, found, flow = null) {
 
       for (const { secret, scope, n } of hotKeys) await adoptHotKey(secret, scope, n)
 
-      // По запросу app — сразу обратно: app входит этим аккаунтом сам. Изнутри
-      // входа — к нему. Экран остаётся, только если есть что сказать (порог
-      // выше одного).
+      // Go straight back unless there is a note to show.
       if (flow?.reply) {
         flow.reply({ ok: true, publicKey: passkey.publicKey, credentialId: passkey.credentialId, accounts: names })
         if (!notes.length) {
@@ -1969,12 +1709,10 @@ function techDetails(passkey) {
       card(
         [
           field('passkey', mono(passkey.publicKey)),
-          // Горячие ключи — по одному на область. Выведенный, но не поставленный
-          // на чейн ключ тоже здесь: он ничего не может, пока его не поставят.
           ...keys.map((key) =>
             field(`fast sign · ${key.scope.account}@${key.scope.permission} · ${chainName(key.scope.chainId)} · #${key.n}`, mono(key.publicKey))
           ),
-          // Именно hostname уедет в ключ как rpid, и чейн сверит его с origin.
+          // This hostname is the rpId the chain checks against the origin.
           field('key origin', location.hostname),
           field('network', `${chain.name} · ${chain.rpcs[0]}`),
         ].filter(Boolean)
@@ -1985,7 +1723,7 @@ function techDetails(passkey) {
   return disclosure('Technical details', [box])
 }
 
-// ─────────────────────────────────────────────── вход
+// ─────────────────────────────────────────────── sign in
 
 function loginScreen(incoming) {
   const { request, reply } = incoming
@@ -1995,8 +1733,6 @@ function loginScreen(incoming) {
   const cancel = cancelLink(reply)
   const again = () => loginScreen(incoming)
 
-  // Новый или найденный ключ уже запомнен. Есть под ним аккаунт — он теперь в
-  // списке; нет — сказать об этом сразу, а не строкой «No account yet».
   const added = (passkey) =>
     attempt({
       title: `Sign in to ${from}`,
@@ -2014,14 +1750,9 @@ function loginScreen(incoming) {
     })
   const findOther = () => findKeyFlow(out, added)
 
-  // Ключа в кеше этого браузера нет. Чаще всего это новое устройство, куда
-  // passkey уже приехал через iCloud или Google, — поэтому сначала только
-  // «войти своим». Завести новый предлагается, лишь когда свой не нашёлся:
-  // новый ключ — другой ключ, и аккаунтов под ним нет.
-  //
-  // «Не нашёлся» и «отменил» WebAuthn не различает намеренно (приватность), так
-  // что после любого из них — обе кнопки. Настоящая ошибка (браузер без PRF)
-  // показывается как есть.
+  // No key cached here — usually a new device the passkey synced to, so lead with
+  // signing in and offer a new key only if none came back. WebAuthn doesn't tell
+  // "not found" from "cancelled" (privacy), so both get both buttons.
   if (!passkeys.length) {
     const first = (notFound) =>
       screen({
@@ -2051,10 +1782,8 @@ function loginScreen(incoming) {
     return
   }
 
-  // Выбирается аккаунт, а не ключ: под одним passkey их бывает несколько, и
-  // решать, каким входить, должен человек здесь, а не app по своей памяти.
-  // Режим — чтобы app сразу показал метку (Fast, Auto). Не узнали — без него:
-  // вход важнее метки.
+  // The user picks the account, not the app: one passkey can sign for several.
+  // The level is best-effort.
   const signIn = async (entry) => {
     const level = await signingLevel(entry).catch(() => null)
     reply({ ok: true, publicKey: entry.passkey.publicKey, credentialId: entry.passkey.credentialId, account: entry.name, level })
@@ -2102,7 +1831,6 @@ function loginScreen(incoming) {
 
   accountsOn(chain, passkeys).then(
     (accounts) => {
-      // Ни под одним ключом аккаунта нет — показать ключи: иначе строк нет вовсе.
       if (!accounts.length) {
         draw(
           passkeys.length === 1 ? 'your key' : 'your keys',
@@ -2123,8 +1851,7 @@ function loginScreen(incoming) {
       )
       const [only] = accounts
       draw(
-        // Сеть — в подписи списка: вход идёт в той сети, где открыт app, и
-        // аккаунты других сетей здесь не видны намеренно.
+        // Only the app's network: other networks are hidden on purpose.
         accounts.length === 1 ? `your ${chain.name} account` : `your ${chain.name} accounts`,
         rows,
         accounts.length === 1 ? [button(`Continue as ${only.name}`, () => signIn(only), 'primary')] : []
@@ -2134,7 +1861,6 @@ function loginScreen(incoming) {
   )
 }
 
-/** Строка на выбор: кружок, имя, чем подтверждается. Без `onclick` — заглушка, пока едет чейн. */
 const pick = ({ face, title, sub, onclick }) =>
   el('button', { className: 'pick', disabled: !onclick, onclick }, [
     face,
@@ -2145,11 +1871,6 @@ const pick = ({ face, title, sub, onclick }) =>
     el('span', { className: 'pick-go' }, [icon(ICONS.chevron, 16)]),
   ])
 
-/**
- * Под passkey нет аккаунта в этой сети. Создавать аккаунт Signer пока не умеет,
- * а перенести существующий — умеет: импорт по приватному ключу, после — снова
- * вход (`again`), где аккаунт уже в списке.
- */
 function noAccountScreen(passkey, reply, again) {
   screen({
     body: [
@@ -2174,21 +1895,15 @@ function noAccountScreen(passkey, reply, again) {
   })
 }
 
-/**
- * Ключи для аккаунта, который уже есть у человека в другом кошельке (§6).
- *
- * Здесь vault ничего не подписывает: он отдаёт публичные ключи — Face ID и,
- * если галка стоит, горячий, — а ставит их кошелёк, которым юзер уже вошёл,
- * одной транзакцией.
- */
+// The vault signs nothing here: it hands public keys (passkey, optional fast key) to the
+// app's wallet, which adds them in one transaction (ADR-0010 §6).
 function enrollScreen({ request, reply }) {
   const out = stack([])
   const from = appName(request.appOrigin)
   const passkeys = loadPasskeys()
   const { account: name, permission } = request
 
-  // Имя и permission приходят от app и попадают на экран и в соль ключа.
-  // Строка не по грамматике Antelope — не аккаунт, а попытка что-то нарисовать.
+  // Name and permission come from the app and reach the screen and the key salt.
   if (!ANTELOPE_NAME.test(String(name)) || !ANTELOPE_NAME.test(String(permission))) {
     screen({
       body: [state({ icon: ICONS.ban, tone: 'red', title: 'Request rejected', text: 'The app named an account that cannot exist.' })],
@@ -2198,18 +1913,12 @@ function enrollScreen({ request, reply }) {
     return
   }
 
-  // Горячий ключ — только на рабочем permission: на owner ключ без Face ID
-  // сделал бы браузер владельцем аккаунта.
+  // Fast sign only on the working permission: on owner it would make the browser the owner.
   const fastAllowed = permission === chain.permission
-  // Режим с самого начала: Fast по умолчанию — ради него люди и переходят.
   let mode = fastAllowed ? 'fast' : 'passkey'
 
-  // Функцией: узел имени живёт на одном экране, а заголовок рисуется на нескольких.
   const title = () => ['Add a passkey to ', accent(name)]
 
-  // Отменил Face ID за быстрые сделки — «Try again» спросит его ещё раз,
-  // «Back» вернёт к экрану, где тумблер можно выключить и обойтись без него.
-  // Назад — с нуля: ключей на устройстве могло стать больше, чем было.
   const use = (passkey) =>
     attempt({
       title: title(),
@@ -2220,7 +1929,6 @@ function enrollScreen({ request, reply }) {
       run: async (work) => {
         const scope = scopeOf(chain, name, permission)
         const trade = mode === 'passkey' ? null : await enrollHotKey(passkey, scope)
-        // Auto — тот же ключ браузера плюс флаг: на чейне разницы нет.
         if (mode === 'auto') await setAutoSign(scope, true)
 
         console.info('[vault] enroll: sending keys', passkey.publicKey, trade?.publicKey ?? '(no fast sign)')
@@ -2243,8 +1951,7 @@ function enrollScreen({ request, reply }) {
   const findOther = () => findKeyFlow(out, use)
   const cancel = cancelLink(reply)
 
-  // Строка живёт между перерисовками (основной экран ↔ «другой ключ»), чтобы
-  // выбранный режим не сбрасывался от похода туда и обратно.
+  // Outlives redraws, so the chosen mode survives a trip to "Use a different key".
   const fastRow = fastAllowed
     ? modePicker({
         label: 'signing mode',
@@ -2266,7 +1973,6 @@ function enrollScreen({ request, reply }) {
 
   const recoveryNote = note(`Your 24 words won’t restore ${name} — its owner key stays with your wallet.`)
 
-  // Ключа на устройстве нет — выбирать нечего: завести новый или принести свой.
   const fresh = () =>
     screen({
       body: [...intro, fastRow ? card([fastRow]) : null, recoveryNote, out],
@@ -2274,9 +1980,6 @@ function enrollScreen({ request, reply }) {
       links: [['I have a key on another device', findOther], cancel],
     })
 
-  // Ключ есть — им и продолжаем, не спрашивая. Новый ключ под каждый аккаунт
-  // не нужен никому, кто не знает, зачем он ему; тот, кто знает, найдёт его
-  // за «Use a different key».
   const [primary, ...others] = passkeys
   const start = () => (primary ? main() : fresh())
 
@@ -2318,10 +2021,6 @@ function enrollScreen({ request, reply }) {
   start()
 }
 
-/**
- * Ключ на этом устройстве — по тому, за кого он уже подписывает, а не по
- * `PUB_WA_…`: хвост ключа человеку не говорит ничего, имена аккаунтов — всё.
- */
 function keyTile(passkey, onclick) {
   const sub = el('span', {}, [skeleton(140)])
 
@@ -2344,10 +2043,7 @@ function keyTile(passkey, onclick) {
   })
 }
 
-/**
- * Горячий ключ для линковки: если какой-то из номеров уже стоит на аккаунте —
- * этот, иначе случайный. Ставит его кошелёк app, не мы.
- */
+// Reuse a slot already on the account, else a random one. The app's wallet adds it, not us.
 async function enrollHotKey(passkey, scope) {
   const secret = await hotSecret(passkey, scope)
 
@@ -2362,20 +2058,12 @@ async function enrollHotKey(passkey, scope) {
   }
 }
 
-// ─────────────────────────────────────────────── подпись
+// ─────────────────────────────────────────────── signing
 
-/**
- * Ключ быстрых сделок для этой подписи — или null, и тогда Face ID.
- *
- * Ключ берётся по области подписанта (сеть, аккаунт, permission) и годится,
- * только если чейн примет его прямо сейчас. Лежать в IndexedDB мало: его могли
- * снять с аккаунта в другом месте, а кнопка с чужим или снятым ключом дала бы
- * транзакцию, которую нода отвергнет «нет подписи».
- *
- * Подписант должен быть один: ключ области подписывает только за неё.
- */
+// The fast sign key for this signature, or null for the passkey. Only if the chain
+// accepts it right now: it may have been removed elsewhere.
 async function usableTradeKey(actions) {
-  // Плательщик CPU подписывает сам, в app, — подписантом он не считается.
+  // The CPU payer signs in the app and does not count.
   const levels = userAuthorizations(chain, actions)
   if (levels.length !== 1) return null
 
@@ -2385,18 +2073,12 @@ async function usableTradeKey(actions) {
     const key = await loadHotKey(scopeOf(chain, level.actor, level.permission))
     return key && (await keySatisfies(chain, key.publicKey, level)) ? key : null
   } catch {
-    // Нода не ответила — не знаем, значит Face ID: он работает всегда.
+    // The node did not answer: the passkey always works.
     return null
   }
 }
 
-/**
- * Предлагать ли тумблер «кнопкой в следующий раз».
- *
- * Только на рабочем permission сети, где этот passkey подписывает один: ключ
- * быстрых сделок ставит он сам, своей подписью. Иначе тумблер обещает то, что
- * потом откажет с ошибкой, уже после сделки.
- */
+// Offer fast sign only where the passkey signs alone: it adds the key itself.
 async function canOfferFastSign(passkey, signer) {
   if (!signer || signer.permission !== chain.permission) return false
 
@@ -2408,7 +2090,6 @@ async function canOfferFastSign(passkey, signer) {
   }
 }
 
-/** Подписывает ли ключ за permission в одиночку. */
 const signsAlone = (auth, key) => auth.keys.some((entry) => entry.key === key && entry.weight >= auth.threshold)
 
 async function confirmScreen({ request, reply }) {
@@ -2424,9 +2105,7 @@ async function confirmScreen({ request, reply }) {
     return
   }
 
-  // Отказ до всякой сборки: то, что менять права не должно приезжать снаружи,
-  // не должно и рисоваться на экране — иначе это просто ещё одна кнопка,
-  // которую однажды нажмут не глядя.
+  // Reject before building: permission changes from outside are never even shown.
   try {
     assertAllowedFromApp(request.actions)
   } catch (error) {
@@ -2448,9 +2127,7 @@ async function confirmScreen({ request, reply }) {
   try {
     built = await buildTransaction(chain, request.actions)
   } catch (error) {
-    // Нода не ответила — это не отказ человека. Запрос app ещё жив, и
-    // повтор собирает транзакцию заново; ответ «нет» уходит, только если
-    // человек сам решил не ждать.
+    // A node failure isn't a rejection: the request is alive, and a retry rebuilds it.
     screen({
       body: [
         state({ icon: ICONS.alert, tone: 'amber', title: 'Could not build it', text: 'The network node did not answer.' }),
@@ -2462,18 +2139,16 @@ async function confirmScreen({ request, reply }) {
     return
   }
 
-  // Всё ниже — из собранной транзакции, а не из запроса: показываем то, что подписываем.
+  // Everything below comes from the built transaction, not the request: show what gets signed.
   const summary = summarize(chain, built.actions)
   const signer = userAuthorizations(chain, built.actions)[0]
   const alcorPaysCpu = built.actions.some((action) => isCpuPayerNoop(chain, action))
   const out = stack([])
 
-  // Ключ быстрых сделок этого аккаунта стоит на чейне — кнопка. Нет — тач.
   const session = await usableTradeKey(built.actions)
 
-  // Auto sign: окно подписывает сразу и закрывается. Не вышло — обычный экран
-  // с ошибкой и кнопками ниже, ничего не теряется. Не сделка Alcor или ABI с
-  // предупреждением — без глаз не подписывается, тоже обычный экран.
+  // Auto sign: sign and close at once, only for Alcor trades without ABI warnings.
+  // On failure fall through to the normal screen.
   if (session?.auto && !built.warnings.length && isAlcorTrade(chain, built.actions)) {
     screen({ body: [pageTitle(summary.title, `From ${from}`), status('Auto sign')] })
     try {
@@ -2486,16 +2161,9 @@ async function confirmScreen({ request, reply }) {
   }
 
   /**
-   * Режим подписи — здесь же, а не только на главной: «опять passkey» человек
-   * думает на экране подписи, а из попапа на главную не попасть.
-   *
-   * Выбор действует со СЛЕДУЮЩЕЙ подписи. Эта подписывается как есть: ключом
-   * браузера, если он стоит, иначе passkey. Смена прав — отдельной транзакцией
-   * и уже после того, как подпись ушла в app: подмешать её к сделке, которую
-   * человек читал на экране, нельзя — он подтверждал не это.
-   *
-   * Табов нет, где выбирать нечего: ключ браузера ставит сам passkey, и если
-   * он не подписывает за permission один, Fast и Auto откажут уже после сделки.
+   * The mode applies from the NEXT signature. The permission change is its own
+   * transaction, sent after this one: mixing it into what the user read is not
+   * what they confirmed. Disabled where the passkey can't sign alone.
    */
   const entry = signer && { chain, name: signer.actor, permission: signer.permission, passkey }
   const current = session ? (session.auto ? 'auto' : 'fast') : 'passkey'
@@ -2517,11 +2185,8 @@ async function confirmScreen({ request, reply }) {
       ]
     : []
 
-  /**
-   * Passkey под сделку. Если выбран Fast или Auto, то же касание выводит и
-   * секрет ключа браузера — иначе включение попросило бы за него отдельный
-   * passkey. Остаётся один: `updateauth` — своя транзакция со своим хешем.
-   */
+  // With fast or auto chosen, the same touch derives the browser key secret too,
+  // so turning it on needs no second prompt.
   let fastSecret = null
   const signWithPasskey = async (next) => {
     if (next === 'passkey') return signTransaction(passkey, built.transaction, built.chainId)
@@ -2541,7 +2206,6 @@ async function confirmScreen({ request, reply }) {
     setTimeout(() => window.close(), 400)
   }
 
-  /** Смена режима после подписи — своим экраном и со своим повтором: сделка уже ушла. */
   const afterwards = (title, run, doneText) =>
     attempt({
       title,
@@ -2559,9 +2223,7 @@ async function confirmScreen({ request, reply }) {
   const remember = (level) => rememberValue('levels', accountId(chain.chainId, signer.actor), level)
 
   const finish = async () => {
-    // Решение принято нажатием кнопки: табы, тронутые во время passkey, уже
-    // ничего не меняют. Сами они остаются на экране — после отмены passkey
-    // человек может передумать перед повтором.
+    // The mode is fixed at click time; tabs touched during the prompt don't count.
     const next = choice
     out.replaceChildren(status(session ? 'Signing' : 'Waiting for your passkey'))
 
@@ -2569,17 +2231,15 @@ async function confirmScreen({ request, reply }) {
     try {
       signed = await sign(next)
     } catch (error) {
-      // Экран подписи остаётся как был, с кнопками: нажать ещё раз — и есть повтор.
       out.replaceChildren(failure(error))
       return
     }
 
-    // Пушит app: в проде между подписью и пушем стоит релей со вторым ключом.
+    // The app pushes: in prod a relay co-signs between signing and push.
     reply({ ok: true, ...signed })
 
     if (next === current) return signedScreen()
 
-    // Fast ↔ Auto: ключ уже стоит, меняется только флаг в браузере.
     if (session && next !== 'passkey') {
       return afterwards(
         'Saving',
@@ -2602,9 +2262,7 @@ async function confirmScreen({ request, reply }) {
       )
     }
 
-    // Подпись уже у приложения, и кнопки подписи с экрана уходят — второй раз
-    // её не нажать. Секрет из подписи годится на одну попытку; повтор спросит
-    // passkey заново.
+    // The secret is good for one attempt; a retry asks for the passkey again.
     let derived = fastSecret
     fastSecret = null
 
@@ -2631,8 +2289,7 @@ async function confirmScreen({ request, reply }) {
       summary.flows.length
         ? section('what happens', [card(summary.flows.map(flow))])
         : null,
-      // Плашки риска идут сразу под суммами и до кнопок: экран vault —
-      // единственное место, где человек может что-то заметить.
+      // Risks right under the amounts, before the buttons.
       ...[...built.warnings, ...summary.risks].map((risk) => banner(risk.kind, risk.text)),
       section('signing as', [
         signer
@@ -2665,21 +2322,12 @@ async function confirmScreen({ request, reply }) {
   })
 }
 
-// ─────────────────────────────────────────────── режим из app
+// ─────────────────────────────────────────────── settings from the app
 
 /**
- * Аккаунт — по запросу app из меню аккаунта.
- *
- * Здесь то, что человеку правда нужно: режим подписи (тот же `signingPanel`,
- * что на главной) и слова восстановления. Удаления passkey здесь нет
- * намеренно — оно на главной, куда ведёт «All accounts»: из app приходят
- * настроить, а не случайно отвязаться.
- *
- * Смена прав идёт здесь, passkey'ем, а app только открыл окно. Прислать сюда
- * «включи Auto» app не может — режим меняет человек, в окне vault.
- *
- * Ответ — при закрытии окна, как бы его ни закрыли: app держит метку режима и
- * должен узнать, на чём остановились.
+ * Account settings opened from the app: signing mode and recovery phrase. Removing
+ * the passkey is on home only, and the app can't set a mode — the user does it here.
+ * Replies however the window closes: the app shows the mode chip.
  */
 function settingsScreen({ request, reply }) {
   let level = null
@@ -2690,7 +2338,6 @@ function settingsScreen({ request, reply }) {
     reply(level ? { ok: true, level } : { ok: false, error: 'Closed before the signing mode was known' })
   }
   addEventListener('pagehide', answer)
-  // Ушёл на главную — app узнаёт выбранный режим, а не «отменено».
   leaveRequest = answer
   const close = () => {
     answer()
@@ -2747,13 +2394,9 @@ function settingsScreen({ request, reply }) {
   })
 }
 
-// ─────────────────────────────────────────────── импорт по запросу app
+// ─────────────────────────────────────────────── import on the app's request
 
-/**
- * Импорт по запросу app — для кошельков, которые не подписывают `updateauth`
- * с сайта (Anchor): ключ человек вставляет здесь, а не в app. Passkey ещё нет —
- * сначала он (с 24 словами), потом тот же импорт.
- */
+// For wallets that won't sign updateauth from a website (Anchor): the key is pasted here, not in the app.
 function importRequest({ request, reply }) {
   const context = { reply, account: String(request.account ?? '') }
   const [primary] = loadPasskeys()
@@ -2767,20 +2410,15 @@ function importRequest({ request, reply }) {
   })
 }
 
-// ─────────────────────────────────────────────── без окна
+// ─────────────────────────────────────────────── no window
 
 /**
- * Подпись без окна — для iframe в app (Auto sign).
+ * Sign without a window, for the iframe in the app (Auto sign). Same guards as the
+ * window; a refusal just makes the app open one.
  *
- * Те же рубежи, что у окна: смена прав не принимается (`assertAllowedFromApp`),
- * сессионный ключ её и не подпишет (`requiresPasskey`); транзакцию собирает
- * vault. Отказ — не ошибка: app откроет обычное окно.
- *
- * Два этапа, потому что окно браузер пускает только вскоре после клика.
- * Сначала решение по флагу в браузере, без сети: не Auto — отказ сразу; Auto —
- * `accept()`, и app знает, что можно спокойно ждать. Потом сеть: сборка и
- * проверка, что ключ на чейне. Подписант берётся из собранной транзакции —
- * подписываем то, что собрали, а не то, что прислали.
+ * Two stages, since the browser allows a popup only shortly after a click: first
+ * decide from the local flag and `accept()`, then build, check the key on chain,
+ * and sign what was built, not what was sent.
  *
  * @param {object} request
  * @param {() => void} accept
@@ -2796,8 +2434,7 @@ async function autoSign(request, accept) {
 
   const asked = signerOf(request.actions)
   if (!asked) return { ok: false, error: 'Auto sign needs a single signer' }
-  // По запросу, до сети: отказ должен успеть, пока браузер ещё пустит окно.
-  // После сборки — ещё раз, по тому, что собрано.
+  // Checked on the request before the network, and again on the built transaction.
   if (!isAlcorTrade(on, request.actions)) return { ok: false, error: 'Not an Alcor trade — confirm it in the window' }
 
   const key = await loadHotKey(scopeOf(on, asked.actor, asked.permission))
@@ -2815,31 +2452,24 @@ async function autoSign(request, accept) {
   }
   if (!isAlcorTrade(on, built.actions)) return { ok: false, error: 'Not an Alcor trade — confirm it in the window' }
   if (!onChain) return { ok: false, error: `This browser's key is no longer on ${asked.actor}` }
-  // ABI, которому нельзя верить на слово, — только через экран: app откроет окно.
+  // An untrusted ABI goes only through the screen.
   if (built.warnings.length) return { ok: false, error: built.warnings[0].text }
 
   return { ok: true, ...(await signTransactionWithSession(key, built.transaction, built.chainId, built.actions)) }
 }
 
-/**
- * Режим аккаунта для метки в app — из iframe, без окна. Только чтение и только
- * публичное: «passkey», «fast» или «auto». Permission — рабочий сети: ключ
- * браузера бывает только на нём.
- */
 async function embeddedLevel(request) {
   const on = chainById(request.chain)
   if (!ANTELOPE_NAME.test(String(request.account))) return null
 
-  // На чужом сайте браузер даёт iframe пустое хранилище, и любой аккаунт
-  // выглядел бы как «passkey». Настоящее хранилище узнаётся по passkey: у
-  // того, кто вошёл через vault, он есть. Нет ни одного — молчим, а не врём.
-  // (`hasStorageAccess` тут не годится: он про cookies, а не про хранилище.)
+  // A third-party iframe gets empty storage, where every account would look like
+  // "passkey". No passkey means not our storage: say nothing rather than lie.
   if (!loadPasskeys().length) return null
 
   return signingLevel({ chain: on, name: request.account, permission: on.permission })
 }
 
-// ─────────────────────────────────────────────── не дождались
+// ─────────────────────────────────────────────── no request
 
 function timeoutScreen() {
   screen({
@@ -2851,7 +2481,6 @@ function timeoutScreen() {
         text: 'The app opened this window but sent nothing. Go back to the app and try again.',
       }),
       section('accepted from', [card(ALLOWED_APP_ORIGINS.map(line))]),
-      // Подсказка разработчику: на проде адрес app один, путать нечего.
       ENV === 'dev'
         ? note(
             'localhost, [::1] and 127.0.0.1 are three different origins, even when they are one dev server. ' +
@@ -2863,7 +2492,7 @@ function timeoutScreen() {
   })
 }
 
-// ─────────────────────────────────────────────── запуск
+// ─────────────────────────────────────────────── start
 
 const pending = isEmbedded() ? null : awaitRequest()
 
@@ -2881,8 +2510,7 @@ if (isEmbedded()) {
 
   const incoming = await pending
 
-  // Ответ app уходит один раз: первый решает, остальные — поздние (уход на
-  // главную после ответа, pagehide после «Done»).
+  // The app gets one reply; later ones (home after replying, pagehide after Done) are dropped.
   if (!incoming.timedOut) {
     const send = incoming.reply
     let answered = false
@@ -2898,8 +2526,7 @@ if (isEmbedded()) {
   if (incoming.timedOut) {
     timeoutScreen()
   } else {
-    // Сеть называет app, а параметры берутся из реестра vault. Имени нет —
-    // остаётся дефолт: так ведут себя запросы, написанные до мультисети.
+    // No network named: the default.
     try {
       if (incoming.request.chain) chain = chainById(incoming.request.chain)
     } catch (error) {

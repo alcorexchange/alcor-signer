@@ -1,21 +1,17 @@
-// Горячий ключ: подписывает без Face ID (автоподпись), живёт в IndexedDB как
-// неэкспортируемый CryptoKey. Свой на каждую область — сеть, аккаунт,
-// permission (`scopeOf`). ADR-0010 §4.
+// Fast sign key: signs without the passkey prompt, stored in IndexedDB as a
+// non-extractable CryptoKey, one per scope — network, account, permission (ADR-0010 §4).
 //
-// Почему он вообще возможен: осмысленное согласие юзер даёт не пальцем, а
-// глазами — Face ID показывает только origin, а что подписывается, написано
-// на экране vault. Клик по кнопке на том же экране несёт ровно столько же.
+// Consent comes from reading the vault screen, not the touch: the passkey prompt shows
+// only the origin, so a click on the same screen carries the same meaning.
 //
-// Откуда берётся. Не из генератора случайных чисел, а из PRF passkey по соли
-// области: одна соль — 32 байта — из них локально ключи номер 0…19. Поэтому
-// браузер — только кеш: очистили — одно касание Face ID выводит тех же
-// кандидатов, и чейн показывает, какой из них стоит на аккаунте. Соль одна на
-// область, а не на номер, потому что WebAuthn даёт не больше двух солей за
-// касание, а перебор двадцати номеров не должен стоить десяти Face ID.
+// Derived, not random: one PRF salt per scope gives 32 bytes, and slots 0…19 come from
+// them locally. The browser is only a cache — after clearing it, one touch re-derives
+// the candidates and the chain shows which one is on the account. One salt per scope,
+// not per slot: WebAuthn gives at most two salts per touch.
 //
-// Чем платим: passkey лежит в Secure Enclave, а этот ключ — в профиле браузера.
-// `extractable: false` закрывает его от скрипта, но не от малвари с доступом к
-// файлам и не от подменённого кода, пока страница открыта.
+// The cost: the passkey lives in the Secure Enclave, this key in the browser profile.
+// `extractable: false` hides it from scripts, not from malware with file access or
+// from tampered code while the page is open.
 
 import { Bytes, KeyType, PublicKey, Signature, p256 } from './vendor/wharfkit.js'
 import { derivePrfSecret } from './passkey.js'
@@ -23,16 +19,14 @@ import { derivePrfSecret } from './passkey.js'
 const DB = 'alcor-vault'
 const STORE = 'hot-keys'
 
-/** Сколько номеров ключа перебирать при восстановлении и выборе свободного. */
 export const HOT_KEY_SLOTS = 20
 
-/** Порядок кривой P-256: всё, что выше половины, Antelope считает неканоничным. */
+// P-256 order: Antelope rejects s above half of it.
 const CURVE_ORDER = 0xffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551n
 
 function open() {
   return new Promise((resolve, reject) => {
-    // Версия 3: горячие ключи из PRF. Прототип, переносить нечего — прежние
-    // хранилища просто удаляются.
+    // v3: PRF-derived fast sign keys. Older stores are dropped, there's nothing to migrate.
     const request = indexedDB.open(DB, 3)
     request.onupgradeneeded = () => {
       const db = request.result
@@ -56,11 +50,8 @@ function tx(mode, run) {
 }
 
 /**
- * Область ключа: сеть, аккаунт, permission.
- *
- * Ключ подписывает ровно там, где он стоит на чейне, и больше нигде, поэтому и
- * выводится, и хранится так же. Сеть — по `chain_id`, а не по имени: у XPR
- * имён уже два, а хеш сети не меняется никогда.
+ * A key signs exactly where it sits on chain, so it is derived and stored per scope.
+ * The network is its chain_id, not its name: XPR already has two names.
  *
  * @typedef {{ chainId: string, account: string, permission: string }} Scope
  */
@@ -68,17 +59,15 @@ export const scopeOf = (chain, account, permission) => ({ chainId: chain.chainId
 
 const idOf = (scope) => `${scope.chainId}:${scope.account}@${scope.permission}`
 
-/** Соль PRF области. Меняется — меняются все горячие ключи, поэтому в ней версия. */
+// Changing the salt changes every fast sign key, hence the version in it.
 export const hotSalt = (scope) => `alcor/v1/auto/${scope.chainId}/${scope.account}/${scope.permission}`
 
-/** Секрет горячих ключей области. Стоит одного Face ID. */
 export function hotSecret(passkey, scope) {
   return derivePrfSecret(passkey, hotSalt(scope))
 }
 
 /**
- * Публичные ключи всех номеров области — чтобы найти на чейне тот, что стоит,
- * не импортируя ни одного приватного.
+ * Public keys of every slot, to find the one on chain without importing any private key.
  *
  * @returns {Promise<{ n: number, publicKey: string }[]>}
  */
@@ -95,12 +84,10 @@ export async function hotCandidates(secret) {
 }
 
 /**
- * Ключ номер `n`: вывести, импортировать неэкспортируемым, запомнить.
+ * Derive slot `n` and store it as a non-extractable key. The scalar bytes exist only
+ * for the import and are wiped; after that JS holds a handle that can sign, not read.
  *
- * Байты скаляра существуют ровно на время импорта и затираются. Дальше у JS
- * есть только ручка: подписать — можно, прочитать — нет.
- *
- * `keepAuto` — только для замены ключа: новый номер наследует Auto старого.
+ * `keepAuto` is for rotation only: the new slot inherits Auto from the old one.
  */
 export async function adoptHotKey(secret, scope, n, { keepAuto = false } = {}) {
   const scalar = await scalarAt(secret, n)
@@ -124,23 +111,15 @@ export async function adoptHotKey(secret, scope, n, { keepAuto = false } = {}) {
   scalar.fill(0)
   jwk.d = ''
 
-  // Уровень переживает только замену ключа (`keepAuto`): Auto остаётся Auto.
-  // Любое другое заведение — новый выбор, и начинается он с Fast: старый флаг
-  // от снятого с чейна ключа не должен молча включить подпись без окна.
+  // Any other adoption starts at Fast: a flag from a key removed on chain must not silently turn on signing without a window.
   const previous = keepAuto ? await tx('readonly', (store) => store.get(idOf(scope))) : null
   const record = { scope, n, pair, auto: previous?.auto === true, createdAt: Date.now() }
   await tx('readwrite', (store) => store.put(record, idOf(scope)))
   return describeKey(record)
 }
 
-/**
- * Auto sign области: ключ этого браузера подписывает сразу, без окна и клика.
- *
- * Флаг живёт на записи ключа, а не отдельно: нет ключа — нет и Auto, и
- * рассинхрона между ними не бывает. Лимитов и срока нет намеренно — выключается
- * тем же переключателем. Транзакции не нужно: на чейне стоит тот же ключ, что и
- * для Fast sign.
- */
+// The Auto flag lives on the key record: no key, no Auto, and they can't drift apart.
+// No limits or expiry on purpose; no transaction, the key on chain is the same as for Fast.
 export async function setAutoSign(scope, on) {
   const record = await tx('readonly', (store) => store.get(idOf(scope)))
   if (!record) throw new Error('Fast sign is not on in this browser')
@@ -153,7 +132,6 @@ export async function loadHotKey(scope) {
   return record ? describeKey(record) : null
 }
 
-/** Все горячие ключи этого браузера — для технических подробностей и уборки. */
 export async function listHotKeys() {
   const records = await tx('readonly', (store) => store.getAll())
   return Promise.all(records.map(describeKey))
@@ -163,7 +141,6 @@ export function forgetHotKey(scope) {
   return tx('readwrite', (store) => store.delete(idOf(scope)))
 }
 
-/** Стереть ключи всех permission'ов аккаунта — после переезда, когда все они сняты. */
 export async function forgetHotKeysOf(chain, account) {
   const keys = await listHotKeys()
   await Promise.all(
@@ -173,12 +150,8 @@ export async function forgetHotKeysOf(chain, account) {
   )
 }
 
-/**
- * Скаляр номера `n`: SHA-256 от метки, секрета, номера и счётчика.
- *
- * Счётчик — на случай скаляра вне [1, n-1]: шанс порядка 2^-128, но ключ вне
- * диапазона кривая не примет, а детерминированность при перехеше сохраняется.
- */
+// Slot scalar: SHA-256 of label, secret, slot and counter. The counter covers a scalar
+// out of [1, n-1] (odds ~2^-128) while keeping derivation deterministic.
 async function scalarAt(secret, n) {
   const label = new TextEncoder().encode('alcor/v1/auto-key')
 
@@ -202,7 +175,7 @@ const publicKeyOf = (compressed) => String(new PublicKey(KeyType.R1, Bytes.from(
 async function describeKey({ scope, n, pair, auto }) {
   const raw = new Uint8Array(await crypto.subtle.exportKey('raw', pair.publicKey))
 
-  // Antelope хранит точку сжатой: префикс по чётности Y плюс координата X.
+  // Antelope stores the point compressed: Y parity prefix plus X.
   const compressed = new Uint8Array(33)
   compressed[0] = raw[64] & 1 ? 3 : 2
   compressed.set(raw.slice(1, 33), 1)
@@ -214,12 +187,9 @@ const toBase64Url = (bytes) =>
   btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
 
 /**
- * Подписать транзакцию сессионным ключом.
- *
- * Подаётся `signingData`, а не готовый дайджест, и это не мелочь: WebCrypto
- * хеширует то, что ему дали, сам. Дайджест он захешировал бы второй раз и
- * подписал не то. Прообраз же — `chain_id || packed_trx || нули` — после
- * SHA-256 внутри WebCrypto даёт ровно тот дайджест, который проверяет нода.
+ * Sign with a fast sign key. Takes `signingData`, not the digest: WebCrypto hashes its
+ * input itself, so a digest would be hashed twice. SHA-256 of
+ * `chain_id || packed_trx || zeros` is exactly the digest the node checks.
  */
 export async function signWithSession(key, signingData, digest) {
   const raw = new Uint8Array(
@@ -229,12 +199,10 @@ export async function signWithSession(key, signingData, digest) {
   const r = raw.slice(0, 32)
   let s = raw.slice(32)
 
-  // WebCrypto канон не соблюдает, Antelope его требует — иначе подпись валидна
-  // математически и отвергнута нодой.
+  // WebCrypto doesn't enforce low-S, Antelope does: otherwise the node rejects a valid signature.
   if (toBigInt(s) > CURVE_ORDER / 2n) s = toBytes(CURVE_ORDER - toBigInt(s))
 
-  // recid в подписи не приходит: WebCrypto отдаёт голые r и s. Его подбирают —
-  // верный тот, при котором из подписи восстанавливается наш же публичный ключ.
+  // WebCrypto returns bare r and s; the recid is the one that recovers our own public key.
   for (const recid of [0, 1, 2, 3]) {
     const data = new Uint8Array(65)
     data[0] = recid + 31
@@ -245,7 +213,7 @@ export async function signWithSession(key, signingData, digest) {
       const signature = new Signature(KeyType.R1, Bytes.from(data))
       if (String(signature.recoverDigest(digest)) === key.publicKey) return signature
     } catch {
-      // Невосстановимый recid — обычное дело, пробуем следующий.
+      // An unrecoverable recid is normal, try the next.
     }
   }
 

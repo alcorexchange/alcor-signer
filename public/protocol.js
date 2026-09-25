@@ -1,33 +1,26 @@
-// Протокол app ↔ vault, половина со стороны vault.
+// The vault's half of the app ↔ vault protocol.
 //
-// ⚠️ ЗАГЛУШКА ПРОТОТИПА. В проде экшены приезжают через релей по reqId (§7):
-// app кладёт запрос, vault забирает его сам, в адресной строке и в окне нет
-// ничего, чем app мог бы управлять. Здесь запрос приходит прямым postMessage от
-// опенера — релея ещё нет. Заменить целиком, когда появится.
+// ⚠️ PROTOTYPE STUB. In prod actions come through a relay by reqId (§7): the app stores
+// the request and the vault fetches it, leaving nothing in the URL or window for the app
+// to control. Here it's a direct postMessage from the opener. Replace entirely then.
 //
-// Что уже сейчас по-настоящему: origin проверяется на обоих концах, targetOrigin
-// задан явно, '*' не используется нигде.
+// Already real: origin is checked on both ends, targetOrigin is explicit, never '*'.
 
 import { ALLOWED_APP_ORIGINS } from './chain.js'
 
 /**
- * Дождаться запроса от app.
- *
  * @returns {Promise<{request: object, reply: (result: object) => void}> | null}
- *   null — страницу открыли руками, а не из app: это режим управления ключами.
+ *   null when the page was opened directly, not by the app.
  */
 export function awaitRequest() {
   if (!window.opener) return null
 
   return new Promise((resolve) => {
-    // Тишина здесь почти всегда означает несовпавший origin, а несовпавший
-    // origin выглядит точно так же, как «app ещё думает». Поэтому ждём
-    // ограниченно и говорим, чего ждали: молча висеть — худший из вариантов.
+    // Silence almost always means a mismatched origin, which looks exactly like a slow
+    // app, so wait a bounded time and say what we waited for.
     console.info('[vault] opened by', document.referrer || 'unknown opener')
-    // Обработчик — переменная, а не имя функционального выражения: такое имя
-    // видно только внутри самой функции, и таймер ниже упал бы ReferenceError.
+    // A variable, not a named function expression: the timer below needs to see it.
     const onMessage = (event) => {
-      // Единственная проверка, которая здесь что-то значит: кто говорит.
       if (!ALLOWED_APP_ORIGINS.includes(event.origin)) {
         if (String(event.data?.type ?? '').startsWith('vault:')) {
           console.warn('[vault] IGNORED request from', event.origin, '— not in ALLOWED_APP_ORIGINS')
@@ -43,9 +36,7 @@ export function awaitRequest() {
 
       const origin = event.origin
       resolve({
-        // appOrigin показывается на экране подписи, поэтому берётся проверенный
-        // event.origin, а не одноимённое поле из данных: на экране должно стоять
-        // то, с чем браузер сверил отправителя, а не то, чем он представился.
+        // The verified event.origin, not the field in the data: the screen shows what the browser checked.
         request: { ...event.data, appOrigin: origin },
         reply: (result) => {
           console.info('[vault] replying', event.data.kind, result.ok ? 'ok' : `fail: ${result.error}`)
@@ -65,7 +56,7 @@ export function awaitRequest() {
 
     window.addEventListener('message', onMessage)
 
-    // App ждёт этого, чтобы не слать запрос в ещё не загруженную страницу.
+    // The app waits for this so it doesn't post into a page that hasn't loaded.
     console.info('[vault] → ready, announcing to', ALLOWED_APP_ORIGINS)
     for (const origin of ALLOWED_APP_ORIGINS) {
       window.opener.postMessage({ type: 'vault:ready' }, origin)
@@ -73,20 +64,17 @@ export function awaitRequest() {
   })
 }
 
-/** Vault встроен в app невидимым iframe — режим Auto sign, без экранов. */
 export const isEmbedded = () => window.parent !== window
 
 /**
- * Режим iframe: запрос — ответ, ничего на экране. Говорит только с родителем
- * из ALLOWED_APP_ORIGINS, и только двух видов:
+ * Iframe mode: request and response, nothing on screen. Talks only to a parent from
+ * ALLOWED_APP_ORIGINS, and only two kinds:
  *
- * - `vault:auto` — подпись, которую человек разрешил без окна (Auto sign).
- *   Решает не app: `sign` сам проверяет, включён ли Auto sign у подписанта, и
- *   отказывает — тогда app открывает обычное окно. `sign` зовёт `accept()`, как
- *   только решил подписывать, — до сети: app по нему понимает, что можно ждать
- *   подпись, а не открывать окно (см. popup.ts).
- * - `vault:level` — какой режим у аккаунта, для метки в app. Только чтение:
- *   команды «поменяй режим» здесь нет и быть не должно — её прислал бы и XSS.
+ * - `vault:auto` — a signature the user allowed without a window. `sign` decides,
+ *   not the app, and calls `accept()` before the network so the app knows to wait
+ *   instead of opening the window (see popup.ts).
+ * - `vault:level` — the account's mode for the app's chip. Read-only: a "change mode"
+ *   command must not exist here, XSS could send it.
  *
  * @param {{ sign: (request: object, accept: () => void) => Promise<object>,
  *   level: (request: object) => Promise<string | null> }} handlers

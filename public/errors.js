@@ -1,13 +1,9 @@
-// Разбор ошибок ноды.
+// Node error parsing. A copy of `utils/antelopeError.ts`, not an import: the vault
+// takes nothing from the app.
 //
-// Копия сути `utils/antelopeError.ts` из app, а не импорт: правило 2 — vault не
-// тянет из приложения ни строчки. Расходятся редко, правятся руками.
-//
-// Зачем вообще: нода кладёт причину в `error.details`, а `APIError.formatError`
-// из wharfkit достаёт её только когда `what === 'unspecified'`. У ассертов
-// контракта `what` заполнен, поэтому наружу уходит бесполезное
-// «eosio_assert_message assertion failure at /v1/chain/push_transaction», а
-// настоящее «Received lower than minTokenOut: …» остаётся внутри.
+// The node puts the reason in `error.details`, but wharfkit's `APIError.formatError`
+// reads it only when `what === 'unspecified'`. Contract asserts set `what`, so the real
+// "Received lower than minTokenOut: …" would be hidden behind a generic message.
 
 const ASSERT_PREFIX = 'assertion failure with message: '
 
@@ -27,17 +23,12 @@ export function explain(error) {
     BY_NAME[error?.name] ??
     detail
 
-  // Отмена — не сбой: человек сам нажал «не надо», и красная плашка тут врёт.
   return { title, detail, kind: CALM.has(error?.name) ? 'info' : 'danger' }
 }
 
 const CALM = new Set(['NotAllowedError', 'AbortError'])
 
-/**
- * Только те случаи, в которых текст ассерта читается однозначно. Всё остальное
- * отдаётся как есть: выдуманное объяснение хуже непонятного, потому что по
- * непонятному хотя бы видно, что оно непонятное.
- */
+// Only asserts that read unambiguously. An invented explanation is worse than an unclear one.
 const EXPLAINED = [
   {
     match: /lower than min|mintokenout|min_?received|slippage/i,
@@ -54,6 +45,5 @@ const BY_NAME = {
   tx_net_usage_exceeded: 'The account ran out of NET bandwidth. Stake more or wait for it to refill.',
   ram_usage_exceeded: 'The account ran out of RAM.',
   unsatisfied_authorization: 'The signature did not satisfy the account permissions.',
-  // Отмена Face ID — не сбой, и пугать красным текстом её не за что.
   NotAllowedError: 'Passkey confirmation was cancelled.',
 }

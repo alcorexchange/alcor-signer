@@ -1,11 +1,8 @@
-// Новое устройство: passkey синхронизировался, а кеша здесь нет (ADR-0010 §7).
+// A new device: the passkey synced, but there's no cache here (ADR-0010 §7).
 //
-// Ассерт WebAuthn не несёт публичного ключа — только подпись. Но из подписи
-// ECDSA ключ вычисляется с точностью до двух кандидатов, а какой настоящий,
-// скажет чейн: неверный не стоит ни на одном аккаунте. В том же касании
-// приходит PRF корня — по нему находятся аккаунты, где owner наш.
-//
-// Бэкенд для этого не нужен: чейн и есть реестр.
+// An assertion carries no public key, but an ECDSA signature recovers two candidates,
+// and the chain tells which is real: the wrong one is on no account. The same touch
+// brings the root PRF to find accounts we own. No backend: the chain is the registry.
 
 import { p256 } from './vendor/wharfkit.js'
 import { assertWithPrf } from './passkey.js'
@@ -14,11 +11,8 @@ import { accountsEverywhere } from './sign.js'
 import { hostOf, presenceOf, signedDigest, webAuthnPublicKey } from './webauthn.js'
 
 /**
- * Найти passkey этого origin, которого нет в кеше.
- *
- * Одно касание, если ключ стоит хоть на одном аккаунте. Если ни на одном
- * (ключ заведён, аккаунта ещё нет), чейн кандидатов не различит — тогда второе
- * касание тем же credential: верный кандидат будет общим у двух подписей.
+ * One touch if the key is on some account. If not, the chain can't tell the candidates
+ * apart, so a second touch with the same credential: the real key is common to both.
  *
  * @returns {Promise<{ passkey: { credentialId: string, publicKey: string, prf: boolean }, root: import('./root.js').Root }>}
  */
@@ -45,13 +39,7 @@ export async function discoverPasskey() {
   return { passkey: { credentialId: first.credentialId, publicKey, prf: true }, root }
 }
 
-/**
- * Кандидаты `PUB_WA_` из подписи ассерта.
- *
- * Подписано `authenticatorData || SHA-256(clientDataJSON)`. Ключ собирается
- * тем же `webAuthnPublicKey`, что и при создании passkey; домен берётся из
- * `clientDataJSON` — ровно его чейн сверит при подписи.
- */
+// The host comes from `clientDataJSON` — exactly what the chain checks when signing.
 export function recoverWebAuthnKeys(response) {
   const authData = new Uint8Array(response.authenticatorData)
   const clientDataJSON = new Uint8Array(response.clientDataJSON)
@@ -67,7 +55,7 @@ export function recoverWebAuthnKeys(response) {
       const point = signature.addRecoveryBit(bit).recoverPublicKey(digest).toRawBytes(true)
       keys.push(String(webAuthnPublicKey(point, presence, host)))
     } catch {
-      // Невосстановимый бит — обычное дело.
+      // An unrecoverable bit is normal.
     }
   }
 

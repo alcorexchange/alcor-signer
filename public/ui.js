@@ -1,13 +1,8 @@
-// Набор кусков интерфейса vault.
+// UI building blocks of the vault.
 //
-// Весь DOM строится здесь и только через textContent. innerHTML в подписывающем
-// origin — единственное место, где может завестись XSS, а данные сюда приходят
-// с чейна и от app. Поэтому его нет нигде, включая иконки: SVG собирается
-// через createElementNS, а не строкой.
-//
-// Язык форм — тот же, что в app: карточка на чуть осветлённом фоне, строка с
-// иконкой слева, мятный акцент, ничего светящегося. Главное — крупно и сверху,
-// техническое — мелко, свёрнуто или на следующем шаге.
+// All DOM is built here, and only through textContent. innerHTML in a signing origin
+// is where XSS would come from, and the data here comes from the chain and the app.
+// So there is none, icons included: SVG is built with createElementNS, not a string.
 
 const SVG = 'http://www.w3.org/2000/svg'
 
@@ -17,7 +12,7 @@ export const el = (tag, props = {}, children = []) => {
   return node
 }
 
-/** @param {string[]} paths — атрибуты d, ничего больше в иконку не попадает. */
+/** @param {string[]} paths — only `d` attributes get into the icon. */
 export function icon(paths, size = 14) {
   const svg = document.createElementNS(SVG, 'svg')
   svg.setAttribute('viewBox', '0 0 24 24')
@@ -47,7 +42,6 @@ export const ICONS = {
   check: ['M4 12l5 5L20 6'],
   alert: ['M12 8v5', 'M12 17h.01', 'M12 3 2 20h20L12 3z'],
   bolt: ['M13 2 4 14h7l-1 8 9-12h-7l1-8z'],
-  // Auto sign: без конца и без клика.
   auto: ['M12 12c-2-2.67-4-4-6-4a4 4 0 1 0 0 8c2 0 4-1.33 6-4zm0 0c2 2.67 4 4 6 4a4 4 0 0 0 0-8c-2 0-4 1.33-6 4z'],
   out: ['M7 17 17 7', 'M8 7h9v9'],
   in: ['M17 7 7 17', 'M16 17H7V8'],
@@ -72,17 +66,8 @@ export const ICONS = {
   eye: ['M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7-10-7-10-7z', 'M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z'],
 }
 
-/** Знак Alcor Signer — кристалл Alcor с замком. Файл лежит рядом — наружу vault не ходит ни за чем. */
 const logomark = () => el('img', { className: 'brand-mark', src: './signer-mark.svg', alt: '' })
 
-/** Шапка: слева — чей это продукт, справа — на каком домене он открыт. */
-/**
- * Шапка: слева «назад» (если экрану есть куда) и знак, справа — адрес.
- *
- * «Назад» живёт здесь, а не у заголовка: шапка не прокручивается, стрелка всегда
- * на месте, а заголовок экрана стоит по общей левой линии с содержимым.
- */
-/** Шапка: «назад», знак — он же путь на главную (`home`), и адрес окна. */
 export const chrome = (back, home) =>
   el('header', {}, [
     el('div', { className: 'brand' }, [
@@ -95,13 +80,8 @@ export const chrome = (back, home) =>
     hostBadge(),
   ])
 
-/**
- * Адрес окна — то, по чему человек проверяет, что это настоящий signer.
- *
- * Одной строкой, без рамки: мятный замок — тот же, что в знаке, — и адрес, в
- * котором ярко регистрируемая часть (`alcor.exchange`) и тихо поддомен. Так
- * браузеры учат читать адрес, и подделку вида `alcor.exchange.evil.io` видно сразу.
- */
+// The address is how people check this is the real signer: the registrable part is
+// bright and the subdomain quiet, so `alcor.exchange.evil.io` stands out.
 function hostBadge() {
   const [sub, ...rest] = location.host.split('.')
   const address = rest.length
@@ -111,37 +91,25 @@ function hostBadge() {
   return el('div', { className: 'host', title: 'Check this address before you sign' }, [icon(ICONS.lock, 11), ...address])
 }
 
-/**
- * Заголовок экрана и строка под ним — что происходит и по чьей просьбе.
- * `title` — строка или части, среди которых может быть `accent(…)`.
- */
 export const pageTitle = (title, sub) =>
   el('div', { className: 'page-head' }, [
     el('h1', { className: 'page-title' }, Array.isArray(title) ? title : [title]),
     sub ? el('div', { className: 'page-sub', textContent: sub }) : null,
   ])
 
-/** Слово в заголовке, о котором экран, — имя аккаунта. Цветом, без подложки. */
 export const accent = (text) => el('span', { className: 'accent', textContent: text })
 
-/**
- * Стопка блоков с одним шагом между ними. Отступы — у стопки, не у блоков:
- * так соседние карточки не слипаются, а пустая стопка не оставляет дыры.
- */
 export const stack = (children, { tight = false } = {}) =>
   el('div', { className: tight ? 'stack tight' : 'stack' }, children)
 
-/** Блок с подписью-рубрикой над ним. */
 export const section = (label, children) =>
   el('div', { className: 'section' }, [el('div', { className: 'section-label', textContent: label }), ...children])
 
 export const note = (text) => el('p', { className: 'note', textContent: text })
 
-/** Карточка. Внутри — строки: поля и плитки, ничего кроме. */
 export const card = (children, className = '') =>
   el('div', { className: `card ${className}`.trim() }, children)
 
-/** Строка «подпись — значение». Значение может быть узлом, а не только строкой. */
 export function field(label, value) {
   const right =
     typeof value === 'string' || typeof value === 'number'
@@ -151,12 +119,6 @@ export function field(label, value) {
   return el('div', { className: 'field' }, [el('span', { className: 'label', textContent: label }), right])
 }
 
-/**
- * Строка-плитка: иконка слева, заголовок с пояснением, довесок справа.
- *
- * Основной кирпич экранов. С `onclick` становится кнопкой — так устроен выбор
- * аккаунта: человек жмёт на строку целиком, а не выцеливает ссылку.
- */
 export function tile({ icon: paths, tone = '', title, sub, aside, onclick, className = '' }) {
   const body = el('div', { className: 'tile-body' }, [
     typeof title === 'string' ? el('div', { className: 'tile-title', textContent: title }) : title,
@@ -174,12 +136,6 @@ export function tile({ icon: paths, tone = '', title, sub, aside, onclick, class
     : el('div', { className: `tile ${className}`.trim() }, children)
 }
 
-/**
- * Что будет по шагам: номер, действие, пояснение.
- *
- * Для экранов, где человек делает часть здесь, часть в другом окне: без
- * порядка он не понимает, где он сейчас и что его ждёт дальше.
- */
 export const steps = (items) =>
   el(
     'ol',
@@ -195,15 +151,6 @@ export const steps = (items) =>
     )
   )
 
-/**
- * Строка-тумблер с пояснением, которое меняется вместе с ним.
- *
- * Под тумблером всегда написано, что будет при текущем положении, — не
- * название настройки, а её последствие: «каждая сделка спросит Face ID».
- * Иначе человек щёлкает туда-сюда и не понимает, что поменялось.
- *
- * Возвращает строку, а не карточку: соседние настройки живут в одной карточке.
- */
 export function switchRow({ icon: paths, title, on, onText, offText, onchange }) {
   const sub = el('span', { textContent: on ? onText : offText })
   let row
@@ -221,7 +168,6 @@ export function switchRow({ icon: paths, title, on, onText, offText, onchange })
   return row
 }
 
-/** Тумблер. Состояние держит вызывающий: здесь только вид и клик. */
 function toggle(on, onclick) {
   const node = el('button', {
     className: `switch${on ? ' on' : ''}`,
@@ -240,11 +186,6 @@ function toggle(on, onclick) {
   return node
 }
 
-/**
- * Длинный идентификатор: середина скрыта, клик копирует целиком.
- *
- * Полное значение лежит в title — это тоже текст, не разметка.
- */
 export function mono(value, { copy = true } = {}) {
   const node = el('span', {
     className: 'mono' + (copy ? ' copyable' : ''),
@@ -269,18 +210,15 @@ export function mono(value, { copy = true } = {}) {
 
 const shorten = (value) => (value.length > 26 ? `${value.slice(0, 14)}…${value.slice(-8)}` : value)
 
-/** Плашка. Опасное должно выглядеть опасно, а не курсивом. */
 export const banner = (kind, text) =>
   el('div', { className: `banner ${kind}` }, [
     icon(kind === 'danger' || kind === 'warn' ? ICONS.alert : ICONS.check, 15),
     el('span', { textContent: text }),
   ])
 
-/** Ход дела: нода думает, Face ID ждёт пальца. Живёт под кнопками. */
 export const status = (text) =>
   el('div', { className: 'status' }, [el('div', { className: 'spinner' }), el('span', { textContent: text })])
 
-/** Заглушка на месте значения, которое ещё едет с чейна. */
 export function skeleton(width, height) {
   const node = el('span', { className: 'skel' })
   node.style.width = `${width}px`
@@ -288,11 +226,8 @@ export function skeleton(width, height) {
   return node
 }
 
-/**
- * Пары цветов для аватаров — подобраны руками под чёрный фон. Случайный hue
- * даёт грязно-жёлтые и болотные круги. Каждая пара — своё семейство оттенков,
- * чтобы соседние аккаунты не сливались; чистой мяты нет — она у «Fast».
- */
+// Picked by hand for the dark background: a random hue gives muddy circles.
+// No pure mint — that is the Fast color.
 const AVATAR_PAIRS = [
   ['#4f8cff', '#7ab8ff'],
   ['#7c6cf2', '#b08cff'],
@@ -305,11 +240,7 @@ const AVATAR_PAIRS = [
 ]
 const AVATAR_ANGLES = [135, 200, 250, 315]
 
-/**
- * FNV-1a с перемешиванием в конце (fmix32 из MurmurHash3): стабильный хеш
- * строки. Без перемешивания похожие имена — `avral3`, `avral.alcor` — падают
- * в одну пару. Не для безопасности — для цвета.
- */
+// FNV-1a with fmix32 (MurmurHash3), so similar names don't share a color. Not for security.
 function hashName(name) {
   let hash = 0x811c9dc5
   for (let i = 0; i < name.length; i++) hash = Math.imul(hash ^ name.charCodeAt(i), 0x01000193)
@@ -318,13 +249,6 @@ function hashName(name) {
   return (hash ^ (hash >>> 16)) >>> 0
 }
 
-/**
- * Аватар аккаунта — градиент, выведенный из имени.
- *
- * Инициал не различает ничего: у половины аккаунтов первая буква одна и та же.
- * Цвет из имени одинаков везде, где это имя встречается, и различим в списке.
- * Без имени — пустой круг-заглушка.
- */
 export function avatar(name) {
   const node = el('div', { className: name ? 'avatar' : 'avatar blank' })
   if (!name) return node
@@ -335,21 +259,12 @@ export function avatar(name) {
   return node
 }
 
-/** Логотип сети из реестра — файл рядом, CSP `img-src 'self'`. */
 export const chainLogo = (chain) => el('img', { className: 'chain-logo', src: chain.logo, alt: '' })
 
-/** Метка-состояние в строке: «Fast», «owner». Мелко и справа, не спорит с именем. */
 export function chip(text, paths, tone = '') {
   return el('span', { className: `chip ${tone}`.trim() }, [paths ? icon(paths, 11) : null, el('span', { textContent: text })])
 }
 
-/**
- * Выбор пути: крупная строка-кнопка в своей карточке.
- *
- * Для экранов, где путей несколько и они правда разные — «привязать кошелёк»,
- * «импортировать ключ», «завести новый». Пояснение говорит, чем путь кончится,
- * а не как он устроен.
- */
 export const choice = ({ icon: paths, tone = '', title, sub, onclick }) =>
   el('button', { className: 'choice', type: 'button', onclick }, [
     el('div', { className: `tile-icon ${tone}`.trim() }, [icon(paths, 17)]),
@@ -360,11 +275,7 @@ export const choice = ({ icon: paths, tone = '', title, sub, onclick }) =>
     el('span', { className: 'choice-go' }, [icon(ICONS.chevron, 15)]),
   ])
 
-/**
- * Сегменты: один из немногих вариантов, все на виду.
- *
- * @param {[unknown, string, (() => Node)?][]} items — значение, подпись и иконка
- */
+/** @param {[unknown, string, (() => Node)?][]} items — value, label, icon */
 export function segmented(items, current, onpick, { disabled = false, tip } = {}) {
   const node = el('div', { className: 'segmented', role: 'radiogroup' })
 
@@ -396,16 +307,8 @@ export function segmented(items, current, onpick, { disabled = false, tip } = {}
   return node
 }
 
-/**
- * Подсказка при наведении мышью и при фокусе с клавиатуры.
- *
- * Живёт в `body` с `position: fixed`: раскрытая строка аккаунта обрезает всё,
- * что выходит за её края, и подсказка внутри неё осталась бы без верха. На
- * тач-экране наведения нет — там подсказки нет вовсе, объясняет строка под
- * переключателем. Клик прячет её: дальше идёт само действие.
- *
- * @param {() => Node[]} content
- */
+// Tooltips live in `body` with `position: fixed`: an open account row clips its overflow.
+// Mouse and keyboard focus only; on touch the text under the tabs explains instead.
 let shownTip = null
 
 const hideTip = () => {
@@ -434,17 +337,14 @@ export function tooltip(target, content) {
   for (const type of ['pointerleave', 'blur', 'click']) target.addEventListener(type, hideTip)
 }
 
-/** Плоский список строк-плиток без карточки: запасные ходы, редкие настройки. */
 export const options = (tiles) => el('div', { className: 'options' }, tiles)
 
-/** Мелкое текстовое действие внутри строки: «заменить ключ» под тумблером. */
 export const inlineAction = (text, paths, onclick, variant = '') =>
   el('button', { className: `inline-action ${variant}`.trim(), type: 'button', onclick }, [
     paths ? icon(paths, 12) : null,
     el('span', { textContent: text }),
   ])
 
-/** Экран об одном: первый запуск, отказ, тупик. Иконка, фраза, объяснение. */
 export const state = ({ icon: paths, tone = '', title, text }) =>
   el('div', { className: 'state' }, [
     el('div', { className: `state-icon ${tone}`.trim() }, [icon(paths, 26)]),
@@ -452,8 +352,6 @@ export const state = ({ icon: paths, tone = '', title, text }) =>
     text ? el('div', { className: 'state-text', textContent: text }) : null,
   ])
 
-/** Движение средств: сколько уходит и сколько приходит минимум. */
-/** Движение средств: стрелка, «You send» и куда — слева, сумма справа. */
 export const flow = ({ dir, label, amount, sub }) =>
   tile({
     icon: dir === 'out' ? ICONS.out : ICONS.in,
@@ -464,7 +362,6 @@ export const flow = ({ dir, label, amount, sub }) =>
     className: `flow ${dir}`,
   })
 
-/** Комиссию сети платит Alcor: знак, «Free» и кто платит — одной строкой, без плашки. */
 export const feeCovered = () =>
   field(
     'network fee',
@@ -476,12 +373,7 @@ export const feeCovered = () =>
   )
 
 /**
- * Выбор из немногих вариантов, свёрнутый в строку: «подпись · значение ⌄».
- *
- * Клик по строке раскрывает под ней варианты с пояснениями, повторный —
- * сворачивает; стрелка разворачивается, и видно, что закрыть можно, ничего не
- * выбрав. Выбор сворачивает список сам. Выбрали не `current` — под строкой
- * `note(value)`, если он передан. `disabled` — только строка, без стрелки.
+ * A choice folded into one row, "label · value ⌄", with the options unfolding below.
  *
  * @param {{ label: string, current: string, disabled?: boolean,
  *   options: { value: string, name: string, text: string, icon: string[], tone?: 'mint' | 'amber' }[],
@@ -539,7 +431,6 @@ export function modePicker({ label, options, current, disabled = false, note, on
     value.className = `mode-value ${tone}`.trim()
     value.replaceChildren(icon(paths, 12), el('span', { textContent: name }))
     list.replaceChildren(...options.map(option))
-    // Пустая строка от `note` — сказать нечего, и пустой строки на экране нет.
     const text = chosen === current ? '' : (note?.(chosen) ?? '')
     hint.hidden = !text
     hint.textContent = text
@@ -550,10 +441,6 @@ export function modePicker({ label, options, current, disabled = false, note, on
   return box
 }
 
-/**
- * Кто подписывает: аватар, имя, сеть и permission. Справа — чем подтверждается.
- * Имя крупно: это главное, что надо сверить перед подписью.
- */
 export const signerRow = ({ name, permission, network, level }) =>
   el('div', { className: 'signer' }, [
     avatar(name),
@@ -580,19 +467,12 @@ export function button(text, onclick, variant = '') {
   })
 }
 
-/** «Назад» — стрелка в шапке, перед знаком. Esc делает то же (см. app.js). */
 const backButton = (onclick) =>
   el('button', { className: 'back', type: 'button', ariaLabel: 'Back', title: 'Back (Esc)', onclick }, [icon(ICONS.left, 16)])
 
 /**
- * Нижняя панель действий — всегда на виду, не уезжает со скроллом.
- *
- * `buttons` — крупные, обычно одна главная. `links` — строка мелких текстовых
- * действий под ней: назад, отмена, запасной ход. Им нужно быть видимыми, но
- * не нужно спорить с главной кнопкой.
- *
  * @param {HTMLElement[]} buttons
- * @param {[string, () => unknown, string?][]} links — текст, действие, вариант ('danger')
+ * @param {[string, () => unknown, string?][]} links — text, action, variant ('danger')
  */
 export function actionBar(buttons, links = []) {
   const row = links.length
@@ -609,18 +489,10 @@ export function actionBar(buttons, links = []) {
   return el('div', { className: 'actions' }, [...buttons, row])
 }
 
-/** Свёрнутая подробность на нативных details — без JS и без состояния. */
 export const disclosure = (title, children) =>
   el('details', {}, [el('summary', { textContent: title }), stack(children)])
 
-/**
- * Экшен в сыром виде: «контракт::экшен», кто подписывает, поля таблицей.
- *
- * Значения слева и моноширинно: memo и JSON бывают длинными, и прижатые
- * вправо они сжимались в узкий столбик.
- *
- * @param {{ contract: string, name: string, by: string, data: [string, string][] }} action — из `describe`
- */
+/** @param {{ contract: string, name: string, by: string, data: [string, string][] }} action — from `describe` */
 export const rawAction = ({ contract, name, by, data }) =>
   el('div', { className: 'raw-action' }, [
     el('div', { className: 'raw-head' }, [
@@ -643,26 +515,19 @@ export const rawAction = ({ contract, name, by, data }) =>
       : null,
   ])
 
-/** Строка-перечисление: один адрес, один ключ — без подписи слева. */
 export const line = (text) => el('div', { className: 'line', textContent: text })
 
-/** Ссылка наружу. `noreferrer` — чтобы обозреватель не получил ссылку на это окно. */
+// noreferrer: the explorer gets no reference to this window.
 export const link = (text, href) =>
   el('a', { className: 'link', href, target: '_blank', rel: 'noreferrer noopener', textContent: text })
 
-/** Ссылка наружу в виде главной кнопки — когда следующий шаг на другом сайте. */
 export const linkButton = (text, href) =>
   el('a', { className: 'button primary', href, target: '_blank', rel: 'noreferrer noopener' }, [
     el('span', { textContent: text }),
     icon(ICONS.external, 14),
   ])
 
-/**
- * 24 слова: пронумерованной сеткой, по три в ряд.
- *
- * Номер при каждом слове — не украшение: переписывают столбиком, и перепутанный
- * порядок даёт чужой корень так же верно, как опечатка.
- */
+// Numbered: words get copied in a column, and a wrong order gives another root just like a typo.
 export const wordGrid = (words) =>
   el('div', { className: 'secret' }, [
     el(
@@ -693,19 +558,12 @@ function copyButton(value) {
 }
 
 /**
- * Поле ввода для секретов: слов и приватного ключа.
+ * Input for secrets: a private key or 24 words.
  *
- * Ни автозаполнения, ни проверки орфографии, ни автокапитализации: словарь
- * браузера и менеджер паролей не должны увидеть то, что сюда вставляют.
- */
-/**
- * Поле для секрета: приватного ключа или 24 слов.
- *
- * Вставленный секрет стирается из буфера обмена: там он живёт дольше, чем
- * нужен, его видит любое приложение с доступом к буферу, и его легко вставить
- * потом не туда. История буфера (менеджеры буфера, Windows) — вне досягаемости.
- * Вставка — жест пользователя, поэтому запись в буфер браузер разрешает;
- * `onCleared` узнаёт, что стёрлось, а не вышло — молчит: поле работает и так.
+ * No autofill, spellcheck or autocapitalize: the browser dictionary and password
+ * managers must not see it. A pasted secret is wiped from the clipboard (paste is a
+ * user gesture, so the write is allowed); clipboard history is out of reach.
+ * `onCleared` fires on success; a failure is silent — the field works either way.
  */
 export function secretInput({ placeholder, multiline = false, onCleared = () => {} }) {
   const node = el(multiline ? 'textarea' : 'input', {
@@ -733,11 +591,9 @@ export function secretInput({ placeholder, multiline = false, onCleared = () => 
 }
 
 /**
- * Подтверждение поверх экрана — нативный `<dialog>`: фон затемнён, фокус
- * внутри, Esc и клик мимо окна — «нет». Для выбора с последствиями, который
- * легко сделать мимоходом одним тапом по табу.
+ * Confirmation over the screen, a native `<dialog>`: Esc or a click outside means no.
  *
- * @returns {Promise<boolean>} true — подтвердили
+ * @returns {Promise<boolean>} true when confirmed
  */
 export function confirmDialog({ icon: paths, tone = '', title, text, confirm, cancel = 'Not now' }) {
   return new Promise((resolve) => {
@@ -759,8 +615,7 @@ export function confirmDialog({ icon: paths, tone = '', title, text, confirm, ca
       ])
     )
 
-    // Esc закрывает окно сам; клик по затемнению попадает в сам <dialog> —
-    // содержимое лежит во внутреннем блоке.
+    // A backdrop click targets the <dialog> itself; the content sits in an inner block.
     dialog.addEventListener('close', () => {
       resolve(false)
       dialog.remove()
@@ -774,15 +629,9 @@ export function confirmDialog({ icon: paths, tone = '', title, text, confirm, ca
   })
 }
 
-/** Список последствий. Не плашка на всё — по строке на каждое, чтобы читалось. */
 export const consequences = (items) =>
   el('ul', { className: 'consequences' }, items.map((text) => el('li', { textContent: text })))
 
-/**
- * Галка: «я записал», «этот аккаунт — да».
- *
- * `sub` — что значит выбор, `aside` — метка справа (permission, сеть).
- */
 export function checkbox(label, onchange, { checked = false, sub, aside } = {}) {
   const box = el('span', { className: 'check-box' }, [icon(ICONS.check, 12)])
   const node = el('label', { className: `check${checked ? ' on' : ''}` }, [
@@ -802,13 +651,7 @@ export function checkbox(label, onchange, { checked = false, sub, aside } = {}) 
   return node
 }
 
-/**
- * Ошибка: что это значит, и что ровно ответила нода.
- *
- * Заголовок — для человека, строка под ним — для того, кто пойдёт разбираться.
- * Второе не прячется: объяснение покрывает не всякий ассерт, и когда не
- * покрывает, точный текст — единственное, по чему вообще можно что-то понять.
- */
+// The node's exact message is never hidden: `explain` doesn't cover every assert, and then it is the only clue.
 export function errorBox(title, detail, kind = 'danger') {
   return el('div', { className: `banner ${kind}` }, [
     icon(ICONS.alert, 15),

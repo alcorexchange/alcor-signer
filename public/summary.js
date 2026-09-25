@@ -1,18 +1,11 @@
-// Что подписывается — человеческими словами.
+// What gets signed, in plain words.
 //
-// Каждый экшен читает декодер своего контракта: грамматика memo у свопа и у
-// спота своя, и общая регулярка однажды прочитает чужую строку как нашу.
-// Декодер перевода выбирается по тому, КОМУ уходят деньги, а не по тому, как
-// выглядит memo: `swapexactin#…` на чужой контракт — не своп Alcor, а перевод
-// незнакомцу, который притворяется свопом.
+// Each action is read by its contract's decoder. A transfer's decoder is chosen by
+// WHO receives the money, not by the memo: `swapexactin#…` to a foreign contract is
+// a transfer to a stranger posing as a swap.
 //
-// На вход идут экшены, раскодированные обратно из собранной транзакции
-// (`buildTransaction` в sign.js), а не JSON, который прислал app: показывать
-// надо ровно то, под чем встанет подпись.
-//
-// ⚠️ Это ещё НЕ классификатор (§8): решения «тихо или на экран» здесь нет,
-// каждая подпись идёт через глаза. Всё, что прочитать не удалось, обязано
-// сказать о себе вслух, а не тихо выпасть.
+// Input is the actions decoded from the built transaction, not the app's JSON.
+// Anything unreadable must say so, never drop out silently.
 
 import { groupDigits } from './format.js'
 import { alcorContracts, isCpuPayerNoop } from './chain.js'
@@ -29,26 +22,19 @@ import { alcorContracts, isCpuPayerNoop } from './chain.js'
  *   risks: Risk[],
  * }} Leg
  *
- * `key` — у ног одного свопа он одинаковый, и они склеиваются в одну строку.
- * `receive` — минимум на получение, ноль значит «любая цена».
+ * `key`: equal for the legs of one swap, which merge into one row.
+ * `receive`: the minimum to receive; zero means any price.
  */
 
-/**
- * Сводка для экрана подписи: заголовок, движение средств, риски.
- *
- * Риски собираются с каждой ноги ДО склейки. Сумма минимумов по маршрутам
- * честна, но одна нога без минимума в сумме не видна — а это своп по любой
- * цене на её долю. Поэтому проверяется каждая нога, а складываются только суммы.
- */
+// Risks are collected per leg BEFORE merging: one leg without a minimum is invisible
+// in the summed amounts, and it swaps its share at any price.
 export function summarize(chain, actions) {
-  // `noop` плательщика CPU — не действие человека: ни ноги, ни счёта в заголовке.
   const legs = actions.filter((action) => !isCpuPayerNoop(chain, action)).map((action) => decode(chain, action))
   const groups = merge(legs)
   const titles = [...new Set(legs.map((leg) => leg.title))]
 
   let title = `${legs.length} actions`
   if (titles.length === 1) title = groups.length > 1 ? `${titles[0]} ×${groups.length}` : titles[0]
-  // Две разные операции — обе по имени: «Remove liquidity + Collect fees».
   else if (titles.length === 2) title = titles.join(' + ')
 
   return {
@@ -58,18 +44,9 @@ export function summarize(chain, actions) {
   }
 }
 
-/**
- * Сделка Alcor — то, что Auto sign подписывает без окна. Всё остальное окно
- * открывает: оно не про недоверие к app, а второй взгляд перед тем, что
- * выходит за рамки торговли на Alcor.
- *
- * Сделка Alcor — каждый экшен (кроме `noop` плательщика CPU):
- * - экшен самого контракта Alcor — отмена ордера, сбор комиссий, клейм;
- * - `transfer` любого токена в контракт Alcor — своп, ордер, депозит, стейк.
- *
- * Единственная оговорка — своп, выручка которого уходит не отправителю: тогда
- * это уже перевод кому-то, просто через Alcor.
- */
+// An Alcor trade is what Auto sign signs without a window: every action is an Alcor
+// contract action or a transfer into an Alcor contract. A swap whose proceeds go to
+// someone else is a transfer through Alcor, not a trade.
 export function isAlcorTrade(chain, actions) {
   const alcor = alcorContracts(chain)
 
@@ -86,11 +63,7 @@ export function isAlcorTrade(chain, actions) {
   })
 }
 
-/**
- * Экшен контракта Alcor, который отдаёт что-то другому аккаунту: позицию
- * (`transferpos`) или комиссии не владельцу (`collect`). Это уже не своя
- * сделка — без окна не подписывается.
- */
+// An Alcor action that gives something to another account: a position, or fees to a non-owner.
 function givesAway(chain, action) {
   if (String(action.account) !== chain.alcor.swap) return false
   if (action.name === 'transferpos') return true
@@ -99,8 +72,7 @@ function givesAway(chain, action) {
 }
 
 /**
- * Экшен как он есть — полная выкладка под «подробности»: кто, что и с какими
- * полями. Ничего не толкует, этим занят `summarize`.
+ * The raw action for the details view.
  *
  * @returns {{ contract: string, name: string, by: string, data: [string, string][] }}
  */
@@ -116,17 +88,12 @@ export function describe(action) {
   }
 }
 
-// ── декодеры ──────────────────────────────────────────────────────────────
+// ── decoders ──────────────────────────────────────────────────────────────
 
 const SPOT_CANCELS = new Set(['cancelbuy', 'cancelsell'])
 
-/**
- * Кто читает экшен. Первый подошедший — и только он.
- *
- * Контракты Alcor берутся из реестра сети (`chain.alcor`), а не из запроса:
- * решать, чей это контракт, по словам app значило бы дать app назвать своп
- * свопом.
- */
+// First match wins. Alcor contracts come from the registry, not the request:
+// otherwise the app could call a swap a swap.
 const DECODERS = [
   { match: (chain, a) => a.account === 'eosio' && a.name === 'updateauth', decode: permissionChange },
   { match: (chain, a) => a.account === chain.alcor.spot && SPOT_CANCELS.has(a.name), decode: spotCancel },
@@ -139,7 +106,6 @@ function decode(chain, action) {
   return decoder ? decoder.decode(chain, action) : unknown(action)
 }
 
-/** Получатель перевода → чья грамматика memo. */
 function receiverDecoder(chain, to) {
   if (to === chain.alcor.swap) return swap
   if (to === chain.alcor.spot) return spotOrder
@@ -147,7 +113,6 @@ function receiverDecoder(chain, to) {
 }
 
 function permissionChange(chain, action) {
-  // Дороже этого экшена нет ничего: он решает, кто владеет аккаунтом.
   return {
     title: 'Permission change',
     risks: [
@@ -164,10 +129,9 @@ function spotCancel(chain, action) {
   return { title: `Cancel ${side} order`, risks: [] }
 }
 
-// ── пулы swap.alcor: ликвидность, комиссии, фарм ─────────────────────────
+// ── swap.alcor pools: liquidity, fees, farms ─────────────────────────────
 //
-// Суммы здесь — `asset` без контракта: чей токен, знает пул, а не экшен.
-// Поэтому строка без эмитента, а пул называется номером.
+// Amounts here are `asset` without a contract: the pool knows the token, so it is named by id.
 
 const assetRow = (dir, label, text, sub) => {
   const amount = parseAmount(text, null)
@@ -176,7 +140,6 @@ const assetRow = (dir, label, text, sub) => {
 
 const pool = (data) => `pool #${data.poolId}`
 
-/** Экшены пулов, которые человек делает сам, — по имени экшена. */
 const POOL_ACTIONS = {
   addliquid: (data) => ({
     title: 'Add liquidity',
@@ -194,7 +157,7 @@ const POOL_ACTIONS = {
     ],
     risks: [],
   }),
-  // Максимумы в collect — «забрать всё», обычно огромные: сумм не показываем.
+  // collect maximums mean "take everything" and are huge, so no amounts.
   collect: (data) => ({
     title: 'Collect fees',
     rows: [{ dir: 'in', label: 'Earned fees', amount: 'all', sub: pool(data) }],
@@ -228,7 +191,6 @@ const POOL_ACTIONS = {
     rows: [{ dir: 'in', label: 'Position', amount: `#${data.posId}`, sub: 'out of the farm' }],
     risks: [],
   }),
-  // Позиция — это ликвидность целиком: кто её держит, тот и выводит.
   transferpos: (data) => ({
     title: 'Transfer position',
     rows: [],
@@ -258,10 +220,6 @@ function unknown(action) {
   }
 }
 
-/**
- * Общая часть любого перевода: что уходит и не поддельный ли это токен сети.
- * Дальше memo читает декодер получателя.
- */
 function transfer(chain, action) {
   const data = action.data ?? {}
   const to = String(data.to ?? '')
@@ -277,8 +235,7 @@ function transfer(chain, action) {
   const risks = []
   const native = chain.systemToken
 
-  // Символ — просто строка, выпустить свой «TLOS» может кто угодно. Настоящий
-  // токен сети отличает только контракт, а его на экране иначе не видно.
+  // Anyone can issue a "TLOS": only the contract tells the real network token apart.
   if (amount.symbol === native.symbol && amount.contract !== native.contract) {
     risks.push({
       kind: 'danger',
@@ -290,13 +247,8 @@ function transfer(chain, action) {
   return { ...leg, risks: [...risks, ...leg.risks] }
 }
 
-/**
- * AMM: `swapexactin#<маршрут>#<получатель>#<минимум>@<контракт>#<дедлайн>`.
- *
- * Сплит-маршрут приходит несколькими переводами, по одному на маршрут. Ноги
- * склеиваются, только если совпадает всё, кроме сумм и самого маршрута: токен
- * и его точность, что получаем, кому. Разошлось хоть что-то — отдельные строки.
- */
+// AMM: `swapexactin#<route>#<recipient>#<minimum>@<contract>#<deadline>`. A split route is
+// one transfer per route; legs merge only if everything but amounts and route matches.
 function swap(chain, { from, to, amount, memo }) {
   const [tag, , recipient, minimum] = memo.split('#')
   const receive = tag === 'swapexactin' ? parseAmountAt(minimum ?? '') : null
@@ -316,8 +268,7 @@ function swap(chain, { from, to, amount, memo }) {
     risks.push({ kind: 'danger', text: 'No minimum was set — this swap goes through at any price.' })
   }
 
-  // Получатель живёт в memo, а не в полях экшена: подменили одно слово, и `to`
-  // по-прежнему выглядит правильно, а деньги придут не тебе.
+  // The recipient lives in the memo: change one word and `to` still looks right.
   if (recipient !== from) {
     risks.push({ kind: 'danger', text: `The proceeds go to ${recipient}, not to ${from}.` })
   }
@@ -331,7 +282,7 @@ function swap(chain, { from, to, amount, memo }) {
   }
 }
 
-/** Спот: `450.0000 USDT@usdt.alcor` — вся строка и есть запрашиваемая сумма. */
+// Spot: `450.0000 USDT@usdt.alcor` — the whole memo is the amount asked for.
 function spotOrder(chain, { to, amount, memo }) {
   const title = 'Order on Alcor'
   const receive = parseAmountAt(memo)
@@ -344,18 +295,15 @@ function spotOrder(chain, { to, amount, memo }) {
     }
   }
 
-  // Ноль в споте — маркет-ордер: исполнится по тому, что лежит в стакане.
+  // Zero on spot is a market order.
   const risks =
     receive.units === 0n ? [{ kind: 'danger', text: 'No minimum was set — this order fills at any price.' }] : []
 
   return { title, out: { amount, to }, receive, risks }
 }
 
-/**
- * Перевод не в Alcor. Memo здесь — записка получателю, и что он с ней сделает,
- * vault не знает. Кроме одного случая: memo в грамматике Alcor на чужой адрес —
- * это подделка под своп или ордер, и деньги уйдут тому, кто её написал.
- */
+// A transfer outside Alcor. An Alcor-grammar memo to a foreign address is a fake swap
+// or order, and the money goes to whoever wrote it.
 function plainTransfer(chain, { to, amount, memo }) {
   const risks = []
 
@@ -378,9 +326,8 @@ function plainTransfer(chain, { to, amount, memo }) {
   }
 }
 
-// ── склейка и вывод ───────────────────────────────────────────────────────
+// ── merging and output ────────────────────────────────────────────────────
 
-/** Ноги с одинаковым `key` — в одну группу, суммы складываются. Порядок первых вхождений. */
 function merge(legs) {
   const groups = []
   const byKey = new Map()
@@ -395,7 +342,7 @@ function merge(legs) {
       continue
     }
 
-    // Ключ гарантирует те же токены и ту же точность — складываются целые единицы.
+    // The key guarantees the same token and precision, so units add up.
     group.out = { ...group.out, amount: { ...group.out.amount, units: group.out.amount.units + leg.out.amount.units } }
     group.receive = { ...group.receive, units: group.receive.units + leg.receive.units }
     group.count += 1
@@ -405,11 +352,8 @@ function merge(legs) {
 }
 
 /**
- * Строки «что уходит — что приходит», как в карточке свопа: подпись слева,
- * сумма справа, под подписью — куда и чей токен.
- *
- * Контракт токена пишется всегда, кроме родного токена сети: «TLM» — просто
- * строка, и отличить настоящий от подделки можно только по нему.
+ * Send/receive rows. The token contract is always shown except for the native token:
+ * a symbol is just a string, only the contract tells a fake apart.
  *
  * @returns {{ dir: 'out' | 'in', label: string, amount: string, sub: string }[]}
  */
@@ -443,10 +387,9 @@ function unique(risks) {
   return risks.filter((risk) => !seen.has(risk.text) && seen.add(risk.text))
 }
 
-// ── суммы ─────────────────────────────────────────────────────────────────
+// ── amounts ───────────────────────────────────────────────────────────────
 //
-// Целыми единицами в BigInt, без float: 8.03 + 1.1 + 0.88 во float — это
-// 10.009999999999998, а на экране подписи не бывает «примерно».
+// BigInt units, no floats: 8.03 + 1.1 + 0.88 is 10.009999999999998 in float.
 
 /** `8.0300 XPR` → { units: 80300n, precision: 4, symbol: 'XPR', contract } */
 function parseAmount(text, contract) {
@@ -457,22 +400,17 @@ function parseAmount(text, contract) {
   return { units: BigInt(whole + fraction), precision: fraction.length, symbol, contract }
 }
 
-/** `0.019188 XMD@xmd.token` — сумма и контракт токена, как их пишут memo Alcor. */
+/** `0.019188 XMD@xmd.token`: amount and token contract, as Alcor memos write them. */
 function parseAmountAt(text) {
   const match = String(text).trim().match(/^(.+)@([a-z1-5.]{1,13})$/)
   return match ? parseAmount(match[1], match[2]) : null
 }
 
-/** Токен целиком: контракт, символ и точность — без неё суммы не складываются. */
 function tokenKey(amount) {
   return `${amount.contract}:${amount.symbol}:${amount.precision}`
 }
 
-/**
- * Сумма на экране подписи: разряды через запятую, дробь — до последнего
- * значащего знака. Здесь не округляют: человек подтверждает ровно это число,
- * а нули в хвосте его не меняют — `3.00000000 WAX` и есть `3 WAX`.
- */
+// No rounding: the user confirms exactly this number. Trailing zeros are dropped.
 function formatAmount({ units, precision, symbol }) {
   const digits = units.toString().padStart(precision + 1, '0')
   const whole = digits.slice(0, digits.length - precision)

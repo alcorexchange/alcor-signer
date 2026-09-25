@@ -1,9 +1,8 @@
 #!/bin/sh
-# Разовая сборка вендор-бандла. В деплое НЕ запускается: в гит коммитится
-# результат, и выкатывается ровно он.
+# One-off build of the vendor bundle. Never runs on deploy: the output is
+# committed, and exactly that ships.
 #
-# Воспроизводимость проверяется так: прогнать заново и сравнить sha256 с vendor/HASH.
-# Не сошлось — значит поменялись версии, а не наш код.
+# Reproducibility: rebuild and compare sha256 with vendor/HASH.
 #
 #   yarn vendor
 set -e
@@ -22,7 +21,7 @@ writeFileSync('vendor/HASH', [
   '@scure/bip39 ' + pin('@scure/bip39'),
   '@scure/bip32 ' + pin('@scure/bip32'),
   '@noble/curves ' + pin('@noble/curves'),
-  // Внутри antelope; секретов K1 не касается (k1.js), но версия должна быть видна.
+  // Inside antelope; never touches K1 secrets (k1.js), but the version should be visible.
   'elliptic ' + pin('elliptic'),
   'bn.js ' + pin('bn.js'),
   'esbuild ' + require('./node_modules/esbuild/package.json').version,

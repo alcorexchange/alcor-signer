@@ -1,24 +1,18 @@
-// K1 (secp256k1) — ключи, которые человек держит сам: owner из 24 слов и
-// ключ, вставленный при импорте.
+// K1 (secp256k1) keys the user holds: owner from the 24 words and imported keys.
 //
-// Всё, что касается их секрета, идёт через @noble/curves, а не через elliptic
-// внутри antelope: у elliptic открытая уязвимость подписи (GHSA-848j-6mx2-7j84)
-// без исправления — неверная подпись вместе с верной выдаёт ключ. Antelope
-// остаются разбор строки ключа и формат подписи, секрет он не трогает.
+// Secrets go through @noble/curves, not the elliptic inside antelope: elliptic has an
+// unfixed signing flaw (GHSA-848j-6mx2-7j84) where a bad signature next to a good one
+// leaks the key. Antelope only parses key strings and formats signatures.
 
 import { Bytes, KeyType, PublicKey, Signature, secp256k1 } from './vendor/wharfkit.js'
 
-/** Публичный ключ — строкой, как его хранит чейн. */
 export function k1PublicKey(privateKey) {
   return String(new PublicKey(KeyType.K1, Bytes.from(secp256k1.getPublicKey(privateKey.data.array, true))))
 }
 
-/**
- * Подписать дайджест так же, как `PrivateKey.signDigest` из antelope, — байт в
- * байт: RFC 6979, low-S, и повтор с номером попытки в `extraEntropy`, пока
- * подпись не станет канонической. Каноничность Antelope требует для K1 сверх
- * low-S: старшие байты r и s без лишнего нуля и без знакового бита.
- */
+// Byte-for-byte like antelope's `PrivateKey.signDigest`: RFC 6979, low-S, retrying with
+// the attempt in `extraEntropy` until canonical — Antelope also requires r and s without
+// a leading zero or sign bit.
 export function signK1(privateKey, digest) {
   for (let attempt = 1; attempt < 256; attempt++) {
     const signature = secp256k1.sign(digest.array, privateKey.data.array, {

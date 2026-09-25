@@ -1,29 +1,17 @@
-// Копия lib/signers/webauthn/passkey.ts, без типов.
-//
-// Именно копия, а не импорт: vault не должен иметь физической возможности
-// дотянуться до бандла app. Расхождение файлов — приемлемая цена за то, что
-// в подписывающий origin не может приехать ничего из полутора тысяч пакетов
-// приложения. Меняется редко, оба места правятся руками.
+// A copy of lib/signers/webauthn/passkey.ts without types. A copy, not an import: the
+// vault must not be able to reach the app bundle at all. Both are edited by hand.
 
 import { PublicKey } from './vendor/wharfkit.js'
 import { createPublic, createSignature } from './webauthn.js'
 
-/**
- * ES256 / P-256. Единственный алгоритм, который принимает Antelope, поэтому
- * единственный предлагаемый: авторизатор, который его не умеет, должен упасть
- * при создании, а не выдать credential, из которого никогда не выйдет ключа.
- */
+// ES256 / P-256, the only algorithm Antelope accepts: an authenticator without it should
+// fail at creation, not hand out a credential that never becomes a key.
 const ES256 = -7
 
 /**
- * Создать passkey и вывести Antelope-ключ, в который он отображается.
- *
- * `userVerification: 'required'` — не политика, а часть ключа: он решает
- * presence-байт внутри `PUB_WA_` (verified = 2, а не present = 1), и чейн
- * сверяет этот байт точно. Значит и ассерты надо просить с тем же значением.
- *
- * `residentKey: 'required'` делает credential discoverable — это то, что
- * позволяет вернувшемуся юзеру войти одним тачем, не называя аккаунт.
+ * `userVerification: 'required'` is part of the key: it sets the presence byte in
+ * `PUB_WA_` (verified = 2), which the chain checks exactly, so assertions must ask the same.
+ * `residentKey: 'required'` makes the credential discoverable for one-touch sign-in.
  *
  * @returns {Promise<{credentialId: string, publicKey: string}>}
  */
@@ -33,9 +21,7 @@ export async function createPasskey(userName, displayName = userName) {
   const credential = await navigator.credentials.create({
     publicKey: {
       challenge: crypto.getRandomValues(new Uint8Array(32)),
-      // rp.id не задаём: браузер возьмёт origin страницы. Назвать его здесь
-      // значило бы завести второе место, которое может разойтись с тем origin,
-      // что чейн читает из clientDataJSON.
+      // No rp.id: the browser uses the page origin, the same one the chain reads from clientDataJSON.
       rp: { name: 'Alcor' },
       user: {
         id: crypto.getRandomValues(new Uint8Array(16)),
@@ -45,9 +31,7 @@ export async function createPasskey(userName, displayName = userName) {
       pubKeyCredParams: [{ type: 'public-key', alg: ES256 }],
       authenticatorSelection: { userVerification: 'required', residentKey: 'required' },
       attestation: 'none',
-      // PRF включается только при создании: у credential, заведённого без него,
-      // расширения потом не появится. Стоит ноль, а без него навсегда закрыт
-      // вариант «вывести из этого же passkey экспортируемый ключ».
+      // PRF can only be enabled at creation; a credential made without it never gets it.
       extensions: { prf: {} },
     },
   })
@@ -57,17 +41,13 @@ export async function createPasskey(userName, displayName = userName) {
   return {
     credentialId: toBase64Url(new Uint8Array(credential.rawId)),
     publicKey: createPublic(credential.response).toString(),
-    // Включается только при создании и задним числом не появляется. Сам вывод
-    // ключа пока не делаем, но флаг сохраняем: без него вариант закрыт навсегда.
     prf: credential.getClientExtensionResults().prf?.enabled === true,
   }
 }
 
 /**
- * Подписать дайджест транзакции passkey'ем.
- *
- * Дайджест уходит челленджем как есть: чейн декодирует `clientDataJSON.challenge`
- * из base64url и требует, чтобы эти 32 байта *были* дайджестом, а не хешировались в него.
+ * The digest goes in as the challenge as is: the chain decodes `clientDataJSON.challenge`
+ * and requires those 32 bytes to *be* the digest, not hash into it.
  *
  * @param {{credentialId: string, publicKey: string}} passkey
  * @param {Checksum256} digest — `transaction.signingDigest(chainId)`
@@ -79,9 +59,7 @@ export async function signDigest(passkey, digest) {
 }
 
 /**
- * Подпись и PRF-секреты одним касанием: challenge ассерта — хеш транзакции,
- * соли едут в том же запросе. Два Face ID подряд на одном экране — это один,
- * который просто не догадались попросить сразу.
+ * Signature and PRF secrets in one touch: the challenge is the transaction digest.
  *
  * @returns {Promise<{ signature: Signature, secrets: Uint8Array[] }>}
  */
@@ -90,12 +68,7 @@ export async function signDigestWithPrf(passkey, digest, salts) {
   return { signature: createSignature(PublicKey.from(passkey.publicKey), response), secrets }
 }
 
-/**
- * Попросить у авторизатора ассерт.
- *
- * Пустой `allowCredentials` означает «любой discoverable credential этого origin» —
- * случай входа, когда мы ещё не знаем, какой ключ выберет юзер.
- */
+// Empty `allowCredentials` means any discoverable credential of this origin.
 async function assert(challenge, allowCredentials = []) {
   assertSupported()
 
@@ -113,16 +86,13 @@ async function assert(challenge, allowCredentials = []) {
 }
 
 /**
- * Ассерт с PRF: одно касание — до двух секретов и подпись под `challenge`.
+ * Assertion with PRF: one touch, up to two secrets (WebAuthn's limit), signing `challenge`.
  *
- * PRF детерминирован: тот же credential и та же соль дают те же 32 байта
- * всегда, на любом устройстве, куда passkey синхронизировался. Соль
- * вычисляется внутри аутентификатора — наружу уходит только результат для
- * запрошенной соли, поэтому разные соли изолированы железом (ADR-0010).
- * Больше двух солей за касание WebAuthn не даёт.
+ * PRF is deterministic: the same credential and salt give the same 32 bytes on every
+ * device the passkey syncs to. It is computed inside the authenticator, so salts are
+ * isolated by hardware (ADR-0010).
  *
- * `passkey = null` — любой discoverable credential этого origin: новое
- * устройство, где кеша ещё нет и спросить, каким ключом, не у кого.
+ * `passkey = null` accepts any discoverable credential: a new device with no cache yet.
  *
  * @returns {Promise<{ credentialId: string, userHandle: Uint8Array | null, response: AuthenticatorAssertionResponse, secrets: Uint8Array[] }>}
  */
@@ -145,8 +115,7 @@ export async function assertWithPrf(passkey, salts, challenge = crypto.getRandom
   const results = assertion.getClientExtensionResults().prf?.results
   const secrets = [results?.first, results?.second].filter(Boolean).map((value) => new Uint8Array(value))
 
-  // Молча вернуть пустоту тут нельзя: без PRF не выводится ни корень, ни
-  // горячий ключ, и сказать об этом надо прямо (ADR-0010 §2).
+  // Never return empty: without PRF there is no root and no fast sign key (ADR-0010 §2).
   if (secrets.length < salts.length) {
     throw new Error('This browser or device cannot derive keys from passkeys. Update the browser or use another device.')
   }
@@ -159,7 +128,6 @@ export async function assertWithPrf(passkey, salts, challenge = crypto.getRandom
   }
 }
 
-/** Один PRF-секрет по одной соли. Стоит одного Face ID. */
 export async function derivePrfSecret(passkey, salt) {
   return (await assertWithPrf(passkey, [salt])).secrets[0]
 }

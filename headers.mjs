@@ -1,31 +1,20 @@
-// Заголовки безопасности vault. Один источник и для дев-сервера, и для прода:
-// прод-хостинг должен отдавать ровно их (см. README, «Заголовки»).
+// Security headers of the vault, one source for dev and prod.
 //
-// Смысл каждого — не «так принято», а конкретная дверь, которую он закрывает:
+//   script-src 'self'          no third-party script loads from anywhere
+//   require-trusted-types-for  the browser itself blocks innerHTML, eval and the like
+//   trusted-types 'none'
+//   connect-src <rpcs>         signed data can go only to our nodes
+//   frame-ancestors <app>      only the app of this environment can embed it (Auto sign iframe)
+//   style-src 'self'           styles from files only, no inline
+//   strict-transport-security  https only: code can't be swapped over http
 //
-//   script-src 'self'          чужой скрипт не грузится ни с какого адреса
-//   require-trusted-types-for  браузер сам запрещает innerHTML, eval и т. п.:
-//   trusted-types 'none'       правило «только textContent» держит уже он, а не ревью
-//   connect-src <rpcs>         подписанное нельзя унести никуда, кроме наших нод
-//   frame-ancestors <app>      встроить можно только в app своего окружения —
-//                              невидимым iframe для Auto sign; экранов в iframe нет
-//   style-src 'self'           стили — только файлом, инлайн не проходит
-//   strict-transport-security  только https: подменить код по http нельзя
-//
-// COOP не ставится намеренно: он обрывает window.opener, а протокол с app
-// живёт на postMessage через opener.
+// No COOP on purpose: it cuts window.opener, and the app protocol runs on postMessage through it.
 
 import { CHAINS, ENVIRONMENTS } from './public/chain.js'
 
-/** Origin'ы всех нод из реестра — единственные адреса, куда vault может ходить. */
 const rpcOrigins = () => [...new Set(Object.values(CHAINS).flatMap((chain) => chain.rpcs.map((rpc) => new URL(rpc).origin)))]
 
-/**
- * CSP окружения. Разница между прод и дев — только в `frame-ancestors`: встроить
- * vault может лишь app своего окружения.
- *
- * @param {keyof typeof ENVIRONMENTS} env
- */
+/** @param {keyof typeof ENVIRONMENTS} env */
 export function contentSecurityPolicy(env) {
   const environment = ENVIRONMENTS[env]
   if (!environment) throw new Error(`Unknown environment: ${env}`)
@@ -47,8 +36,7 @@ export function contentSecurityPolicy(env) {
 /** @param {keyof typeof ENVIRONMENTS} env */
 export const securityHeaders = (env) => ({
   'content-security-policy': contentSecurityPolicy(env),
-  // Только https, два года. Первый же http-запрос к подписывающему домену —
-  // окно для подмены кода, которое HSTS закрывает со второго визита.
+  // Two years. Any http request to the signing domain is a chance to swap the code.
   'strict-transport-security': 'max-age=63072000; includeSubDomains',
   'x-content-type-options': 'nosniff',
   'referrer-policy': 'no-referrer',

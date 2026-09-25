@@ -1,14 +1,11 @@
-// Корень Alcor Sign: одни 24 слова на все сети и все аккаунты (ADR-0010 §3).
+// The root: one set of 24 words for every network and account (ADR-0010 §3).
 //
-// 32 байта берутся из PRF passkey по соли корня, а не из генератора случайных
-// чисел, — и это единственное нестандартное место. Дальше всё по стандартам:
-// BIP-39 превращает байты в слова, BIP-32 строит из слов дерево ключей, путь
-// размечен по BIP-44, номер сети — из SLIP-44. Поэтому те же слова в любом
-// BIP-39-инструменте дают те же ключи.
+// Its 32 bytes come from the passkey PRF instead of a random generator — the only
+// non-standard part. The rest is BIP-39 words, a BIP-32 tree, BIP-44 paths and SLIP-44
+// coin types, so the same words give the same keys in any BIP-39 tool.
 //
-// Корень нигде не хранится. Нужен — Face ID, вывели, использовали, забыли
-// (`forgetRoot`). Строки в JS обнулить нельзя, поэтому слова живут только
-// в объекте, который отпускается сразу после операции.
+// The root is never stored: derive, use, forget (`forgetRoot`). JS strings can't be
+// zeroed, so the words live only in an object released right after the operation.
 
 import {
   Bytes,
@@ -26,39 +23,28 @@ import { k1PublicKey } from './k1.js'
 import { derivePrfSecret } from './passkey.js'
 import { accountsForKey } from './sign.js'
 
-/** Соль корня. Меняется — меняются все ключи всех аккаунтов, поэтому в ней версия. */
+// Changing the salt changes every key of every account, hence the version in it.
 export const ROOT_SALT = 'alcor/v1/root'
 
-/**
- * Сколько пустых номеров подряд пропускать при поиске аккаунтов.
- *
- * Не «до первого пустого»: номер мог быть выделен под recovery, который так и
- * не встал на чейн, и за ним могут стоять настоящие аккаунты (§7).
- */
+// Empty slots to skip in a row while scanning: a slot may have been taken for a recovery
+// key that never landed on chain, with real accounts after it (§7).
 const GAP = 5
 
 /**
  * @typedef {{ words: string[], master: HDKey }} Root
  */
 
-/** 32 байта PRF → корень. */
 export function rootFromSecret(secret) {
   const words = entropyToMnemonic(secret, englishWordlist).split(' ')
   return { words, master: HDKey.fromMasterSeed(mnemonicToSeedSync(words.join(' '))) }
 }
 
-/** Корень по Face ID. Стоит одного касания. */
 export async function rootFromPasskey(passkey) {
   return rootFromSecret(await derivePrfSecret(passkey, ROOT_SALT))
 }
 
-/**
- * Корень из 24 слов, введённых человеком.
- *
- * Регистр и лишние пробелы прощаются: переписывали с бумаги. Опечатка — нет:
- * контрольная сумма BIP-39 её ловит, и отказ лучше, чем чужой корень, под
- * которым не окажется ни одного аккаунта.
- */
+// Case and extra spaces are forgiven; typos are not — the BIP-39 checksum catches them,
+// and a refusal beats a foreign root with no accounts under it.
 export function rootFromWords(text) {
   const words = String(text).trim().toLowerCase().split(/\s+/)
   const phrase = words.join(' ')
@@ -67,26 +53,19 @@ export function rootFromWords(text) {
     throw new Error('These are not the 24 words Alcor Signer gave you. Check each word and its order.')
   }
 
-  // Через энтропию, а не напрямую: так корень из слов и корень из PRF
-  // строятся одной и той же дорогой.
+  // Through entropy, so roots from words and from PRF are built the same way.
   return rootFromSecret(mnemonicToEntropy(phrase, englishWordlist))
 }
 
-/** Отпустить корень: приватные данные дерева обнуляются, слова — стираются из массива. */
 export function forgetRoot(root) {
   root?.master.wipePrivateData()
   root?.words.fill('')
 }
 
-/** Путь owner-ключа аккаунта `index` в сети. Все верхние уровни жёсткие. */
+// All upper levels are hardened.
 export const ownerPath = (chain, index) => `m/44'/${chain.slip44}'/${index}'/0/0`
 
-/**
- * Owner-ключ аккаунта `index` в сети.
- *
- * K1: его примут Anchor, cleos и любой кошелёк — recovery ценен ровно тем, что
- * работает снаружи.
- */
+// K1, so Anchor, cleos and any wallet accept it: recovery is worth only what works outside.
 export function ownerKey(root, chain, index) {
   const node = root.master.derive(ownerPath(chain, index))
   const privateKey = new PrivateKey(KeyType.K1, Bytes.from(node.privateKey))
@@ -95,10 +74,9 @@ export function ownerKey(root, chain, index) {
 }
 
 /**
- * Все аккаунты корня: по каждой сети номера по порядку, до GAP пустых подряд.
- *
- * Сеть, которая не ответила, не пропускается молча: для восстановления «не
- * нашли» и «не спросили» — разные вещи, и человек должен знать, какая из них.
+ * Every account of the root: slots in order on each network, until GAP empty in a row.
+ * A network that didn't answer is reported, not skipped: "not found" and "not asked"
+ * are different things for recovery.
  *
  * @returns {Promise<{ accounts: { chain, name: string, permission: string, key: ReturnType<typeof ownerKey> }[], failed: string[] }>}
  */
@@ -135,12 +113,7 @@ async function scanChain(root, chain) {
   return found
 }
 
-/**
- * Первый номер в сети, под которым ещё нет ни одного аккаунта.
- *
- * Для нового аккаунта и для recovery на импортированный: номер, уже занятый
- * другим аккаунтом, связал бы их общим ключом.
- */
+// First slot with no account: a used slot would tie two accounts to one key.
 export async function nextFreeIndex(root, chain) {
   for (let index = 0; ; index++) {
     const key = ownerKey(root, chain, index)

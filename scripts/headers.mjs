@@ -1,8 +1,7 @@
-// public/_headers для Cloudflare — из headers.mjs, чтобы прод отдавал ровно
-// то же, что дев-сервер (с прод-списком origin'ов).
+// public/_headers for Cloudflare, from headers.mjs, so prod serves exactly what dev does.
 //
-//   yarn headers           записать
-//   yarn headers --check   только сверить; разошлось — код 1
+//   yarn headers           write
+//   yarn headers --check   compare only; exit 1 on mismatch
 
 import { readFile, writeFile } from 'node:fs/promises'
 import { securityHeaders } from '../headers.mjs'
@@ -12,8 +11,8 @@ const check = process.argv.includes('--check')
 
 const headers = {
   ...securityHeaders('prod'),
-  // Хешей в именах файлов нет, поэтому каждый файл сверяется при каждой
-  // загрузке: после деплоя браузер не соберёт новый app.js со старым sign.js.
+  // No hashes in file names, so revalidate every load: after a deploy the
+  // browser must not mix a new app.js with an old sign.js.
   'cache-control': 'no-cache',
 }
 

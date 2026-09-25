@@ -1,11 +1,8 @@
-// Тупой https-сервер над public/. Без зависимостей, без watch, без ничего:
-// vault не должен уметь собираться — значит и обслуживать его нечему.
+// Plain https server over public/: no dependencies, no build, no watch.
 //
 //   yarn dev   →   https://sign.localhost:8443
 //
-// Сертификат локальный (mkcert), CA уже в системе, поэтому origin доверенный
-// по-настоящему: passkey нельзя выпустить через прокликанную ошибку сертификата,
-// а @wharfkit/webauthn вдобавок отказывается строить ключ не с https.
+// The cert is local (mkcert) with a trusted CA: passkeys need a truly secure origin.
 
 import { createServer } from 'node:https'
 import { readFile } from 'node:fs/promises'
@@ -32,8 +29,7 @@ createServer({ cert, key }, async (req, res) => {
   const path = decodeURIComponent(new URL(req.url, 'https://sign.localhost').pathname)
   const file = join(ROOT, normalize(path === '/' ? '/index.html' : path))
 
-  // normalize() схлопывает '..', но сам по себе из каталога не выпускает —
-  // проверяем явно, иначе сервер отдаёт весь диск.
+  // normalize() collapses '..' but doesn't confine the path — check it explicitly.
   if (!file.startsWith(ROOT)) {
     res.writeHead(403).end('forbidden')
     return
