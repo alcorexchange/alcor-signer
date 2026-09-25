@@ -452,10 +452,34 @@ export function editKeysAction(account, permission, authority, { add = [], remov
 
 const KEY_ORDER = { K1: 0, R1: 1, WA: 2 }
 
-function compareKeys(a, b) {
-  const typeOf = (key) => KEY_ORDER[key.split('_')[1]] ?? 99
-  if (typeOf(a) !== typeOf(b)) return typeOf(a) - typeOf(b)
-  return a < b ? -1 : a > b ? 1 : 0
+/**
+ * Порядок ключей, которого требует чейн: `updateauth` с другим отвергается
+ * как «Invalid authority». Нода сравнивает сами ключи, а не строки: тип
+ * (K1, R1, WA), затем 33 байта точки беззнаково (`memcmp`), у WA дальше байт
+ * присутствия и rpid. Строки base58 разной длины упорядочены иначе — так
+ * passkey `sign.alcor.exchange` встал перед дев-ключом `sign.localhost`.
+ */
+export function compareKeys(a, b) {
+  const [x, y] = [PublicKey.from(a), PublicKey.from(b)]
+  if (x.type !== y.type) return KEY_ORDER[x.type] - KEY_ORDER[y.type]
+
+  // 33 байта точки и, у WA, 34-й — присутствие. У K1 и R1 его нет у обоих.
+  const [p, q] = [x.data.array, y.data.array]
+  for (let i = 0; i < 34; i++) if (p[i] !== q[i]) return p[i] - q[i]
+
+  return compareBytes(rpidBytes(p), rpidBytes(q))
+}
+
+/** rpid внутри WA-ключа: после точки и присутствия — длина varuint32 и строка. */
+function rpidBytes(data) {
+  let at = 34
+  while (at < data.length && data[at] & 0x80) at++
+  return data.subarray(at + 1)
+}
+
+function compareBytes(p, q) {
+  for (let i = 0; i < Math.min(p.length, q.length); i++) if (p[i] !== q[i]) return p[i] - q[i]
+  return p.length - q.length
 }
 
 /**
