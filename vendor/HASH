@@ -1,0 +1,8 @@
+@wharfkit/antelope 1.1.1
+@wharfkit/webauthn 1.3.0
+@scure/bip39 1.6.0
+@scure/bip32 1.7.0
+@noble/curves 1.9.7
+elliptic 6.6.1
+esbuild 0.27.2
+sha256 cda80122e6e301dd63f6afb57b46b7cd9df6de8f1e5ed737a684e157bb4a384c

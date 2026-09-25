@@ -1,0 +1,30 @@
+{
+  "name": "alcor-signer",
+  "private": true,
+  "type": "module",
+  "description": "Alcor Signer — the signing origin (sign.alcor.exchange): passkeys, keys and transaction signing for Alcor apps",
+  "scripts": {
+    "postinstall": "patch-package",
+    "dev": "node serve.mjs",
+    "vendor": "sh vendor/build.sh",
+    "csp": "node -e \"import('./headers.mjs').then(m => console.log(m.contentSecurityPolicy(process.argv[1] ?? 'prod')))\"",
+    "abis": "node scripts/pin-abis.mjs"
+  },
+  "devDependencies": {
+    "@noble/curves": "1.9.7",
+    "@scure/bip32": "1.7.0",
+    "@scure/bip39": "1.6.0",
+    "@wharfkit/antelope": "1.1.1",
+    "@wharfkit/webauthn": "1.3.0",
+    "buffer": "6.0.3",
+    "esbuild": "0.27.2",
+    "patch-package": "8.0.1"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "resolutions": {
+    "@wharfkit/antelope": "1.1.1",
+    "elliptic": "6.6.1"
+  }
+}

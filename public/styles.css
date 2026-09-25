@@ -1,0 +1,1090 @@
+/*
+ * Все стили vault. Отдельным файлом, а не <style> в разметке: CSP здесь
+ * `style-src 'self'`, и инлайновый блок пришлось бы разрешать отдельно.
+ *
+ * Токены Alcor скопированы значениями из assets/css/variables.css.
+ * Именно скопированы: vault не тянет из app ни одного файла, иначе исчезает
+ * всё, ради чего он живёт на отдельном origin. Расходятся редко, правятся руками.
+ */
+:root {
+  color-scheme: dark;
+
+  /*
+   * Палитра — темнее app и спокойнее: почти чёрный фон, нейтральные серые с
+   * лёгким холодным оттенком, мята чуть глубже фирменной (#39d998), чтобы не
+   * кислотить на чёрном. Тёплые акценты приглушены до одной светлоты.
+   */
+  --bg: #111313;
+  --page-bg: #0b0c0c;
+
+  /* Карточки DeFi-стиля: не плашка поверх фона, а чуть осветлённый фон. */
+  --card-bg: rgba(255, 255, 255, 0.028);
+  --card-bg-hover: rgba(255, 255, 255, 0.045);
+  --card-bg-active: rgba(255, 255, 255, 0.06);
+  --subtle-bg: rgba(255, 255, 255, 0.055);
+
+  --border: rgba(255, 255, 255, 0.075);
+  --border-strong: rgba(255, 255, 255, 0.13);
+  --border-soft: rgba(255, 255, 255, 0.045);
+
+  /*
+   * Текст приглушён намеренно: почти белое на почти чёрном расплывается и
+   * читается как свечение. Основной — не белый, а светло-серый.
+   */
+  --text: #e2e6e4;
+  --text-secondary: #b4bbb8;
+  --text-muted: #868e8b;
+  --text-faint: #5e6563;
+
+  --primary: #34d399;
+  --primary-hover: #4fdcaa;
+  --primary-ink: #032b1d;
+  /*
+   * Заливка главной кнопки — на тон глубже акцента: большая плашка того же
+   * цвета, что мелкие мятные значки, читается ярче их и спорит с тёмной гаммой.
+   */
+  --primary-fill: #2cb985;
+  --primary-fill-hover: #33c48f;
+  --primary-fill-active: #27a878;
+  --primary-line: rgba(52, 211, 153, 0.24);
+  --primary-border: rgba(52, 211, 153, 0.4);
+
+  --sell: #f07189;
+  --sell-soft: rgba(240, 113, 137, 0.1);
+  --warning: #f2c14e;
+  /* Осторожность без тревоги — у Auto sign: тот же жёлтый, но тише. */
+  --caution: #d9b563;
+  --warning-soft: rgba(242, 193, 78, 0.08);
+  --warning-line: rgba(242, 193, 78, 0.24);
+  --error: #f06262;
+  --error-soft: rgba(240, 98, 98, 0.09);
+  --error-line: rgba(240, 98, 98, 0.3);
+
+  --font: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --mono: ui-monospace, 'SF Mono', Menlo, Monaco, 'Courier New', monospace;
+
+  --radius: 12px;
+  --radius-md: 8px;
+  --radius-sm: 6px;
+  --radius-xs: 4px;
+  --duration: 0.15s;
+
+  /* Ритм: между блоками экрана и внутри рубрики. Один на весь vault. */
+  --gap: 26px;
+  --gap-tight: 10px;
+  --gutter: 24px;
+}
+
+* { box-sizing: border-box; }
+
+/*
+ * Полос прокрутки нет нигде — прокрутка есть. Появляясь, полоса забирает
+ * ширину и сдвигает всё окно влево, стоит раскрыть аккаунт; колесо, тачпад и
+ * палец работают и без неё.
+ */
+html { height: 100%; scrollbar-width: none; }
+html::-webkit-scrollbar { display: none; }
+
+body {
+  display: flex;
+  justify-content: center;
+  min-height: 100%;
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 400 13px/1.5 var(--font);
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection { background: var(--primary-line); color: var(--text); }
+
+[hidden] { display: none !important; }
+
+/* Вращение спиннера — единственная анимация здесь, и та не всем нужна. */
+@media (prefers-reduced-motion: reduce) {
+  * { animation: none !important; transition: none !important; }
+}
+
+/*
+ * Колонка на всю высоту, а не лента сверху вниз.
+ *
+ * Скроллится только `main`: шапка с доменом и кнопки стоят на месте — домен
+ * потому, что он подтверждает окно, кнопки потому, что «Отклонить» не ищут
+ * прокруткой.
+ */
+#app {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: 420px;
+  height: 100dvh;
+  background: var(--bg);
+}
+
+/*
+ * Экран — стопка блоков с одним шагом между ними. Отступы задаёт стопка, а не
+ * блоки: так две карточки подряд не слипаются, а пустой контейнер под статус
+ * не оставляет дыры.
+ */
+main,
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap);
+}
+.stack:empty { display: none; }
+.stack.tight { gap: var(--gap-tight); }
+
+main {
+  flex: 1;
+  min-height: 0;
+  padding: 26px var(--gutter) 32px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+}
+main::-webkit-scrollbar { display: none; }
+
+/*
+ * Большой экран: не колонка в потолок, а окно по центру.
+ *
+ * Высота — по содержимому целиком, без прокрутки внутри: длинный экран
+ * прокручивается страницей, как обычный сайт. Внутренняя прокрутка остаётся
+ * только в узком попапе, где кнопки подписи должны стоять на месте.
+ * `margin: auto` центрирует короткое окно и не обрезает верх длинного.
+ */
+@media (min-width: 560px) and (min-height: 620px) {
+  body { align-items: flex-start; padding: 24px 20px; min-height: 100vh; background: var(--page-bg); }
+
+  #app {
+    height: auto;
+    margin: auto 0;
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    overflow: hidden;
+  }
+
+  main { flex: none; overflow: visible; }
+}
+
+/* Узкий попап: поля по краям съедают строку, которую и так некуда девать. */
+@media (max-width: 400px) {
+  :root { --gutter: 16px; }
+}
+
+/* ── шапка ─────────────────────────────────────────────────── */
+
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex: none;
+  padding: 14px var(--gutter);
+  border-bottom: 1px solid var(--border-soft);
+}
+
+/* Логотип — один знак и одна надпись, капсом с разрядкой. */
+.brand { display: flex; align-items: center; gap: 9px; }
+.brand-mark { display: block; width: 20px; height: 22px; }
+.brand-name { font-size: 12px; font-weight: 500; letter-spacing: 0.14em; text-transform: uppercase; }
+
+/*
+ * Домен — якорь подлинности окна: в попапе это единственное, что отличает
+ * настоящий sign от нарисованного заражённой страницей. Без рамки: щит,
+ * адрес с выделенным доменом и подпись под ним.
+ */
+.host { display: flex; align-items: center; flex: none; font-family: var(--mono); font-size: 11px; color: var(--text-secondary); }
+.host svg { flex: none; margin-right: 6px; color: var(--primary); }
+.host-sub { color: var(--text-faint); }
+
+/* ── заголовок экрана ──────────────────────────────────────── */
+
+.page-title { margin: 0; font-size: 18px; font-weight: 500; line-height: 1.3; letter-spacing: -0.02em; word-break: break-word; }
+.page-sub { margin-top: 4px; font-size: 12px; line-height: 1.55; color: var(--text-muted); }
+
+/* «Назад» — стрелка в шапке, перед знаком: не прокручивается и не сдвигает заголовок. */
+button.back {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  margin: -4px 0 -4px -7px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-md);
+  background: none;
+  color: var(--text-muted);
+}
+button.back:hover:not(:disabled) { background: var(--card-bg-hover); color: var(--text); }
+
+/* ── рубрика ───────────────────────────────────────────────── */
+
+.section { display: flex; flex-direction: column; gap: var(--gap-tight); }
+.section-label {
+  padding: 0;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.note { margin: 0; padding: 0; font-size: 11.5px; line-height: 1.6; color: var(--text-muted); }
+
+/* Строка-подсказка с иконкой: граница безопасности, где вставлять ключ. */
+.hint {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  padding: 2px 0 0;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-faint);
+}
+.hint svg { flex: none; margin-top: 2px; }
+/* Где можно вставлять ключ: светлее обычной подсказки, замок мятный, адрес как в шапке. */
+.hint.safe { font-size: 12px; color: var(--text-secondary); }
+.hint.safe svg { color: var(--primary); }
+.hint-host { font-family: var(--mono); font-size: 11.5px; color: var(--text); }
+.hint-quiet { color: var(--text-muted); }
+
+/* ── карточка ──────────────────────────────────────────────── */
+
+/*
+ * «Карточка» — не коробка, а плоский список строк прямо на фоне, как экран
+ * позиции в app. Ни заливки, ни рамки, ни разделителей между строками: строки
+ * отделяет воздух, а выделяет ховер.
+ */
+.card { display: flex; flex-direction: column; }
+.card > .tile,
+.card > .field,
+.card > .line { padding-left: 0; padding-right: 0; }
+
+/* ── строка «подпись — значение» ───────────────────────────── */
+
+.field {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 14px;
+  min-height: 40px;
+  padding: 10px 14px;
+  font-size: 12px;
+}
+
+.label { flex: none; color: var(--text-muted); }
+
+.value { color: var(--text-secondary); text-align: right; word-break: break-word; }
+
+.mono {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-secondary);
+  text-align: right;
+}
+.mono.copyable { cursor: pointer; border-bottom: 1px dashed var(--border-strong); }
+.mono.copyable:hover { color: var(--text); }
+.mono.copied { color: var(--primary); border-bottom-color: transparent; }
+
+/* Метка в строке: «Fast», «owner». */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  padding: 0;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.5;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+/* Цвет — у значка, не у подложки: мятное на мятном читается как подсветка. */
+.chip.mint { color: var(--text-secondary); }
+.chip.mint svg { color: var(--primary); }
+.chip.amber { color: var(--text-secondary); }
+.chip.amber svg { color: var(--caution); }
+
+/* ── плитка: иконка, текст, довесок справа ─────────────────── */
+
+.tile {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 12px 14px;
+  text-align: left;
+}
+
+
+.tile-icon {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 20px;
+  height: 20px;
+  color: var(--text-muted);
+}
+.tile-icon.mint { color: var(--primary); }
+.tile-icon.pink { color: var(--sell); }
+.tile-icon.amber { color: var(--warning); }
+.tile-icon.red { color: var(--error); }
+
+.tile-body { flex: 1; min-width: 0; }
+.tile-title { font-size: 13px; font-weight: 500; letter-spacing: -0.01em; }
+.tile-sub { margin-top: 2px; font-size: 11.5px; line-height: 1.45; color: var(--text-muted); }
+.tile-aside { flex: none; display: flex; align-items: center; gap: 8px; color: var(--text-muted); }
+
+button.tile {
+  border: none;
+  border-radius: 0;
+  background: none;
+  font-weight: 400;
+  cursor: pointer;
+}
+button.tile:hover:not(:disabled) { background: var(--card-bg-hover); border-color: transparent; }
+.card > button.tile { width: calc(100% + 20px); margin: 0 -10px; padding-left: 10px; padding-right: 10px; border-radius: var(--radius-md); }
+button.tile .tile-aside { transition: transform var(--duration), color var(--duration); }
+button.tile:hover:not(:disabled) .tile-aside { transform: translateX(2px); color: var(--primary); }
+
+/*
+ * Запасные ходы: плоский список без карточки, мельче и тише главного
+ * действия — чтобы было видно, что они есть, но палец шёл не к ним.
+ */
+.options { display: flex; flex-direction: column; }
+/* Ховер — скруглённая подсветка шире текста, как строки позиций в app: строка
+   выходит за край колонки на свой отступ, текст остаётся на месте. */
+.options .tile { width: calc(100% + 20px); margin: 0 -10px; padding: 11px 10px; border-radius: var(--radius-md); }
+.options .tile + .tile { border-top: none; }
+.options .tile-title { font-size: 12.5px; color: var(--text-secondary); }
+.options button.tile:hover:not(:disabled) .tile-title { color: var(--text); }
+
+/* Мелкое действие внутри строки: «заменить ключ» под пояснением тумблера. */
+button.inline-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  width: auto;
+  padding: 5px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: none;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+button.inline-action:hover:not(:disabled) { background: none; border-color: var(--text-faint); color: var(--text); }
+/* Тихое и необратимое — «Remove passkey»: серое, краснеет при наведении. */
+button.inline-action.quiet { color: var(--text-muted); }
+button.inline-action.quiet:hover:not(:disabled) { border-color: rgba(240, 113, 137, 0.4); color: var(--sell); }
+.segmented button:disabled { opacity: 0.5; }
+
+/* ── выбор пути ────────────────────────────────────────────── */
+
+button.choice {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: calc(100% + 20px);
+  margin: 0 -10px;
+  padding: 14px 10px;
+  border: none;
+  border-radius: var(--radius-md);
+  background: none;
+  text-align: left;
+  font-weight: 400;
+}
+button.choice:hover:not(:disabled) { background: var(--card-bg-hover); }
+.choice-title { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 500; letter-spacing: -0.01em; }
+.choice-go { flex: none; display: flex; color: var(--text-faint); transition: transform var(--duration), color var(--duration); }
+button.choice:hover:not(:disabled) .choice-go { transform: translateX(2px); color: var(--primary); }
+
+/* ── сегменты ──────────────────────────────────────────────── */
+
+/* Табы — как Advanced / Simple и 1D / 1W в app: тёмная дорожка, выбранный светлее. */
+.segmented {
+  display: inline-flex;
+  align-self: flex-start;
+  gap: 2px;
+  padding: 2px;
+  border-radius: var(--radius-md);
+  background: rgba(255, 255, 255, 0.04);
+}
+.segmented button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  width: auto;
+  padding: 5px 12px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: none;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.segmented button:hover:not(:disabled) { background: none; color: var(--text-secondary); }
+.segmented button.on,
+.segmented button.on:hover:not(:disabled) { background: rgba(255, 255, 255, 0.08); color: var(--text); }
+.segmented .chain-logo { width: 14px; height: 14px; opacity: 0.55; transition: opacity 0.15s; }
+.segmented button:hover .chain-logo,
+.segmented button.on .chain-logo { opacity: 1; }
+
+/* ── движение средств ──────────────────────────────────────── */
+
+/* Сумма справа, как в карточке свопа: цвет несёт только стрелка. */
+.flow .tile-aside { max-width: 60%; }
+.flow-amount { font-family: var(--mono); font-size: 14px; letter-spacing: -0.01em; color: var(--text); text-align: right; word-break: break-all; }
+
+/* Подписант: имя — главное на экране после сумм. */
+.signer { display: flex; align-items: center; gap: 12px; padding: 6px 0; }
+.signer .avatar { width: 32px; height: 32px; }
+.signer-name { font-size: 15px; font-weight: 500; letter-spacing: -0.01em; word-break: break-all; }
+.signer-sub { display: flex; align-items: center; gap: 6px; margin-top: 3px; font-size: 11.5px; color: var(--text-muted); }
+.signer-sub .chain-logo { width: 12px; height: 12px; }
+
+/* Комиссия за счёт Alcor: цвет только у «Free». */
+.fee-covered { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; }
+.fee-mark { display: block; width: 12px; height: 13px; }
+.fee-free { font-weight: 500; color: var(--primary); }
+.fee-by { color: var(--text-muted); }
+
+/* ── тумблер ───────────────────────────────────────────────── */
+
+button.switch {
+  position: relative;
+  flex: none;
+  width: 32px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: var(--subtle-bg);
+  cursor: pointer;
+  transition: background var(--duration), border-color var(--duration);
+}
+button.switch::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  transition: transform var(--duration), background var(--duration);
+}
+button.switch.on { background: var(--primary); border-color: transparent; }
+button.switch.on::after { transform: translateX(14px); background: var(--primary-ink); }
+button.switch:hover:not(:disabled) { background: var(--subtle-bg); border-color: var(--text-muted); }
+button.switch.on:hover:not(:disabled) { background: var(--primary-hover); border-color: transparent; }
+button.switch:disabled { opacity: 0.5; cursor: default; }
+
+/* Строка с тумблером: пояснение под заголовком меняется вместе с ним. */
+.switch-row { align-items: flex-start; }
+.switch-row .tile-aside { min-height: 20px; }
+.switch-row .tile-icon { margin-top: 0; }
+.switch-row .tile-sub { transition: color var(--duration); }
+.switch-row.on .tile-sub { color: var(--text-secondary); }
+
+/* ── список аккаунтов ──────────────────────────────────────── */
+
+.list-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 0 0 4px; }
+.list-title { display: flex; align-items: baseline; gap: 8px; margin: 0; font-size: 18px; font-weight: 500; letter-spacing: -0.02em; }
+.list-count { font-size: 14px; font-weight: 400; color: var(--text-faint); letter-spacing: 0; }
+
+/*
+ * Действие в строке заголовка — мятный контур, как Add / Claim в app. Ниже
+ * заголовка ростом и тише рамкой: заметна, но не спорит с «Accounts».
+ */
+button.accent {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  width: auto;
+  height: 28px;
+  padding: 0 10px 0 8px;
+  border: 1px solid var(--primary-line);
+  border-radius: var(--radius-md);
+  background: none;
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: -0.005em;
+  color: var(--primary);
+}
+button.accent svg { flex: none; }
+button.accent:hover:not(:disabled) { background: none; border-color: var(--primary-border); color: var(--primary-hover); }
+
+/*
+ * Строка аккаунта. Свёрнута — кто и сколько. Раскрыта — настройки под ней,
+ * на том же фоне и по той же левой линии: продолжение строки, не новая карточка.
+ */
+
+.acct-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: calc(100% + 20px);
+  margin: 0 -10px;
+  padding: 11px 10px;
+  border-radius: var(--radius-md);
+  text-align: left;
+}
+button.acct-head {
+  border: none;
+  background: none;
+  font-weight: 400;
+}
+button.acct-head:hover:not(:disabled) { background: var(--card-bg-hover); }
+
+/*
+ * Раскрытый аккаунт выделяется фокусом, а не рамкой и не фоном: остальные
+ * аккаунты приглушаются, и ярким остаётся только он со своими настройками.
+ * Наведение возвращает приглушённому яркость — видно, что он тоже живой.
+ */
+.acct { transition: opacity 0.2s ease; }
+.chain-list:has(.acct.open) .acct:not(.open) { opacity: 0.4; }
+.chain-list:has(.acct.open) .acct:not(.open):hover { opacity: 1; }
+.acct.open button.acct-head:hover:not(:disabled) { background: none; }
+
+.acct-body { flex: 1; min-width: 0; }
+.acct-name { font-size: 14px; font-weight: 500; letter-spacing: -0.01em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.acct-meta { display: flex; align-items: center; gap: 6px; margin-top: 3px; font-size: 11.5px; color: var(--text-muted); white-space: nowrap; }
+.acct-balance { font-family: var(--mono); font-size: 11px; color: var(--text-muted); }
+.acct-fast { display: flex; flex: none; }
+.acct-fast:empty { display: none; }
+.acct-chevron { flex: none; display: flex; color: var(--text-faint); transition: transform var(--duration), color var(--duration); }
+button.acct-head:hover .acct-chevron { color: var(--text-secondary); }
+.acct.open .acct-chevron { transform: rotate(180deg); }
+
+/*
+ * Настройки раскрытого аккаунта. Три строки по общей левой линии:
+ *   SIGNING ……… Passkey  Fast  Auto
+ *   что будет при этом уровне
+ *   Replace browser key   Remove passkey
+ */
+/*
+ * Раскрытие — плавное: высота едет через grid-template-rows 0fr → 1fr (так
+ * анимируется «auto», которого height не умеет), содержимое проявляется
+ * следом. Отступы — у содержимого: у свёрнутой панели не должно оставаться
+ * ни пикселя высоты.
+ */
+.acct-panel {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  visibility: hidden;
+  transition: grid-template-rows 0.24s ease, opacity 0.18s ease, visibility 0s linear 0.24s;
+}
+.acct.open .acct-panel {
+  grid-template-rows: 1fr;
+  opacity: 1;
+  visibility: visible;
+  transition: grid-template-rows 0.24s ease, opacity 0.2s ease 0.06s, visibility 0s;
+}
+.acct-panel-clip { min-height: 0; overflow: hidden; }
+.acct-panel-body { padding: 4px 0 16px; }
+
+.level-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.level-label { font-size: 10px; font-weight: 500; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-faint); }
+.level-text { display: flex; align-items: center; gap: 8px; margin: 10px 0 0; font-size: 12px; line-height: 1.5; color: var(--text-muted); }
+/*
+ * Режим на экране подписи. Строка того же вида, что «network fee», только
+ * нажимается: справа режим и стрелка. Раскрыта — под ней три режима тем же
+ * плавным раскрытием, что аккаунт на главной; стрелка смотрит вверх.
+ */
+.mode-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: calc(100% + 20px);
+  min-height: 40px;
+  margin: 0 -10px;
+  padding: 10px;
+  border: none;
+  border-radius: var(--radius-md);
+  background: none;
+  font-size: 12px;
+  font-weight: 400;
+  text-align: left;
+}
+.mode-head .label { flex: 1; }
+button.mode-head:hover:not(:disabled) { background: var(--card-bg-hover); }
+.mode > .field { padding-left: 0; padding-right: 0; }
+.mode-value { display: inline-flex; align-items: center; gap: 6px; color: var(--text-secondary); }
+.mode-value svg { color: var(--text-muted); }
+.mode-value.mint svg { color: var(--primary); }
+.mode-value.amber svg { color: var(--caution); }
+.mode-chevron { display: flex; color: var(--text-faint); transition: transform var(--duration), color var(--duration); }
+button.mode-head:hover .mode-chevron { color: var(--text-secondary); }
+.mode.open .mode-chevron { transform: rotate(180deg); }
+
+.mode-panel {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  visibility: hidden;
+  transition: grid-template-rows 0.24s ease, opacity 0.18s ease, visibility 0s linear 0.24s;
+}
+.mode.open .mode-panel {
+  grid-template-rows: 1fr;
+  opacity: 1;
+  visibility: visible;
+  transition: grid-template-rows 0.24s ease, opacity 0.2s ease 0.06s, visibility 0s;
+}
+/* Шире на поля ховера: иначе обрезка срежет скругление у строк с отрицательным отступом. */
+.mode-panel-clip { min-height: 0; margin: 0 -10px; padding: 0 10px; overflow: hidden; }
+.mode-options { display: flex; flex-direction: column; padding: 2px 0 6px; }
+
+.mode-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  width: calc(100% + 20px);
+  margin: 0 -10px;
+  padding: 9px 10px;
+  border: none;
+  border-radius: var(--radius-md);
+  background: none;
+  font-weight: 400;
+  text-align: left;
+}
+button.mode-option:hover:not(:disabled) { background: var(--card-bg-hover); }
+/* Ховер — полутоном мяты: имя и значок теплеют, фон остаётся нейтральным. */
+.mode-option-icon,
+.mode-option-name { transition: color var(--duration); }
+button.mode-option.mint:hover .mode-option-icon { color: var(--primary); }
+button.mode-option.amber:hover .mode-option-icon,
+.mode-option.amber.on .mode-option-icon { color: var(--caution); }
+button.mode-option:hover .mode-option-name { color: color-mix(in srgb, var(--primary) 55%, var(--text)); }
+.mode-option-icon { display: flex; padding-top: 2px; color: var(--text-faint); }
+.mode-option-body { display: flex; flex: 1; flex-direction: column; gap: 2px; min-width: 0; }
+.mode-option-name { font-size: 12.5px; font-weight: 500; color: var(--text-secondary); }
+.mode-option-text { font-size: 11.5px; line-height: 1.45; color: var(--text-muted); }
+.mode-option-check { display: flex; padding-top: 2px; color: var(--primary); visibility: hidden; }
+.mode-option.on .mode-option-icon { color: var(--primary); }
+.mode-option.on .mode-option-name { color: var(--text); }
+.mode-option.on .mode-option-check { visibility: visible; }
+
+/*
+ * Подсказка при наведении: без тени — отделяет её рамка и фон на тон светлее.
+ * Живёт в body с position: fixed (см. `tooltip` в ui.js).
+ */
+.tip {
+  position: fixed;
+  z-index: 50;
+  max-width: 236px;
+  padding: 9px 11px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: #181b1a;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--text-muted);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+.tip.shown { opacity: 1; }
+.tip-head { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; font-size: 12px; font-weight: 500; color: var(--text); }
+.tip-head svg { color: var(--text-muted); }
+.tip-head.mint svg { color: var(--primary); }
+.tip-head.amber svg { color: var(--caution); }
+.tip-caution { margin-top: 6px; color: color-mix(in srgb, var(--caution) 70%, var(--text-muted)); }
+
+.mode-note { margin: 2px 0 0; font-size: 11.5px; line-height: 1.45; color: var(--text-muted); }
+
+.level-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+
+/* Сеть над своими аккаунтами: логотип, имя, сколько их, если больше одного. */
+.chain-group { display: flex; flex-direction: column; gap: 4px; }
+.chain-list { gap: 22px; }
+.chain-head { display: flex; align-items: center; gap: 8px; padding: 0 0 4px; font-size: 10px; font-weight: 500; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-faint); }
+.chain-logo { display: block; flex: none; width: 15px; height: 15px; border-radius: 50%; }
+
+/* Пусто: аккаунтов нет, под текстом сразу пути, как их завести. */
+.empty { padding: 4px 0 6px; }
+.empty-title { font-size: 14px; font-weight: 500; letter-spacing: -0.015em; }
+.empty-text { margin-top: 4px; font-size: 12px; line-height: 1.55; color: var(--text-muted); }
+
+/* ── крупные состояния: первый запуск, отказ, тупик ────────── */
+
+.state { padding: 24px 6px 4px; text-align: center; }
+.state-icon {
+  display: grid;
+  place-items: center;
+  margin: 0 auto 14px;
+  color: var(--primary);
+}
+.state-icon.amber { color: var(--warning); }
+.state-icon.red { color: var(--error); }
+.state-title { font-size: 18px; font-weight: 500; letter-spacing: -0.02em; }
+.state-text { max-width: 320px; margin: 9px auto 0; font-size: 12.5px; line-height: 1.6; color: var(--text-muted); }
+
+/* ── плашки ────────────────────────────────────────────────── */
+
+.banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 11px 12px;
+  border: 1px solid;
+  border-radius: var(--radius-md);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.banner svg { flex: none; margin-top: 2px; }
+.banner-detail {
+  margin-top: 5px;
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.45;
+  opacity: 0.75;
+  word-break: break-word;
+}
+
+.banner.danger { border-color: var(--error-line); background: var(--error-soft); color: #ffb4b4; }
+.banner.warn { border-color: var(--warning-line); background: var(--warning-soft); color: #efdca6; }
+.banner.ok { padding: 0; border: none; background: none; color: var(--text-secondary); }
+.banner.ok svg { color: var(--primary); }
+.banner.info { padding: 0; border: none; background: none; color: var(--text-muted); }
+
+/* ── ход дела: ждём ноду, ждём Face ID ─────────────────────── */
+
+.status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 2px 0;
+  font-size: 12.5px;
+  color: var(--text-secondary);
+}
+
+.spinner {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  border: 1.5px solid rgba(255, 255, 255, 0.14);
+  border-top-color: var(--primary);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* Заглушка на месте ещё не приехавшего значения. Статичная: мерцающих
+   поверхностей в проекте нет. */
+.skel {
+  display: inline-block;
+  height: 12px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.07);
+  vertical-align: middle;
+}
+
+/* ── аккаунт: кружок ───────────────────────────────────────── */
+
+.avatar {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+}
+.avatar.blank { background: var(--subtle-bg); }
+
+/* Выбор аккаунта при входе: аккаунт крупно, целиком кнопкой. */
+/* Выбор аккаунта при входе — та же строка, что на главной: без рамки, ховер скруглённый. */
+button.pick {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: calc(100% + 20px);
+  margin: 0 -10px;
+  padding: 11px 10px;
+  border: none;
+  border-radius: var(--radius-md);
+  background: none;
+  text-align: left;
+  font-weight: 400;
+}
+button.pick:hover:not(:disabled) { background: var(--card-bg-hover); }
+/* Заглушка, пока едет чейн: не тусклая и без стрелки — её просто ещё не нажать. */
+button.pick:disabled { opacity: 1; }
+button.pick:disabled .pick-go { visibility: hidden; }
+.pick-body { flex: 1; min-width: 0; }
+.pick-name { font-size: 14px; font-weight: 500; letter-spacing: -0.02em; word-break: break-all; }
+.pick-sub { display: flex; align-items: center; gap: 5px; margin-top: 3px; font-size: 11.5px; color: var(--text-muted); }
+.pick-go { flex: none; display: flex; color: var(--text-muted); transition: transform var(--duration), color var(--duration); }
+button.pick:hover:not(:disabled) .pick-go { transform: translateX(2px); color: var(--primary); }
+
+/* ── шаги ──────────────────────────────────────────────────── */
+
+/* Номера в кружках, соединённые тонкой линией, — плоско, без карточки. */
+.steps { margin: 0; padding: 0; list-style: none; }
+.step { display: flex; gap: 14px; padding: 11px 0; }
+.step + .step { border-top: 1px solid var(--border-soft); }
+.step:first-child { padding-top: 0; }
+.step:last-child { padding-bottom: 0; }
+.step-n {
+  flex: none;
+  width: 18px;
+  padding-top: 1px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--primary);
+}
+.step-body { min-width: 0; }
+.step-title { font-size: 13px; font-weight: 500; letter-spacing: -0.01em; }
+.step-sub { margin-top: 2px; font-size: 11.5px; line-height: 1.45; color: var(--text-muted); }
+
+/* ── подробности ───────────────────────────────────────────── */
+
+details { border-top: 1px solid var(--border-soft); }
+details + details { margin-top: calc(-1 * var(--gap)); }
+summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 13px 0;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  cursor: pointer;
+  list-style: none;
+}
+summary::-webkit-details-marker { display: none; }
+summary:hover { color: var(--text-secondary); }
+summary::after {
+  content: '';
+  width: 5px;
+  height: 5px;
+  margin-right: 3px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: translateY(-2px) rotate(45deg);
+  transition: transform var(--duration);
+}
+details[open] summary::after { transform: translateY(1px) rotate(-135deg); }
+details > .stack { padding-bottom: 4px; }
+
+/* Сырой экшен: заголовок «контракт::экшен», поля таблицей. Экшены делит тонкая линия. */
+.raw-action { display: flex; flex-direction: column; gap: 10px; }
+.raw-action + .raw-action { padding-top: 14px; border-top: 1px solid var(--border-soft); }
+.raw-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.raw-call { font-family: var(--mono); font-size: 12px; color: var(--text); word-break: break-all; }
+.raw-sep { color: var(--text-faint); }
+.raw-by { flex: none; font-family: var(--mono); font-size: 11px; color: var(--text-muted); }
+.raw-fields {
+  display: grid;
+  grid-template-columns: minmax(64px, max-content) minmax(0, 1fr);
+  gap: 7px 18px;
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+.raw-key { color: var(--text-muted); }
+.raw-value { font-family: var(--mono); font-size: 11px; color: var(--text-secondary); word-break: break-all; }
+.raw-value.empty { color: var(--text-faint); }
+.raw-foot { padding-top: 12px; border-top: 1px solid var(--border-soft); font-size: 11px; color: var(--text-faint); }
+
+/* ── ключ на экране ────────────────────────────────────────── */
+
+/* То, что переписывают на бумагу: целиком, крупно и выделяемое одним кликом. */
+.secret {
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+button.secret-copy {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  width: auto;
+  margin-top: 14px;
+  padding: 7px 12px;
+  border-radius: var(--radius-sm);
+  font-size: 11.5px;
+}
+button.secret-copy.done { color: var(--primary); border-color: var(--primary-line); }
+
+/* 24 слова: номер мелко и приглушённо, слово — моноширинно и крупно. */
+.word-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px 12px;
+  margin: 0;
+  padding: 0 0 0 22px;
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--text);
+  user-select: all;
+}
+.word-grid li::marker { color: var(--text-faint); font-size: 10.5px; }
+.word-grid .word { overflow-wrap: anywhere; }
+
+/* ── поле ввода ────────────────────────────────────────────── */
+
+.field-input {
+  width: 100%;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: none;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 1.6;
+  resize: vertical;
+  outline: none;
+  transition: border-color var(--duration);
+}
+.field-input:hover { border-color: var(--border-strong); }
+.field-input:focus { border-color: var(--text-muted); }
+.field-input::placeholder { color: var(--text-faint); }
+
+/* ── последствия ───────────────────────────────────────────── */
+
+.consequences { margin: 0; padding: 0; list-style: none; }
+.consequences li {
+  position: relative;
+  padding: 5px 0 5px 16px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.consequences li::before {
+  content: '';
+  position: absolute;
+  left: 3px;
+  top: 13px;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--text-faint);
+}
+
+
+/* ── галка ─────────────────────────────────────────────────── */
+
+.check {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 0;
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  user-select: none;
+}
+.check-box {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 16px;
+  height: 16px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-xs);
+  color: transparent;
+  transition: background var(--duration), border-color var(--duration), color var(--duration);
+}
+.check.on .check-box { background: var(--primary); border-color: transparent; color: var(--primary-ink); }
+.check-body { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+.check-title { color: var(--text); font-weight: 500; }
+.check-sub { margin-top: 1px; font-size: 11.5px; color: var(--text-muted); }
+
+/* Галки подряд — список, а не россыпь отдельных плашек. */
+.checks { display: flex; flex-direction: column; }
+
+/* ── перечисление и ссылки ─────────────────────────────────── */
+
+.line {
+  padding: 11px 14px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-secondary);
+  word-break: break-all;
+}
+
+
+.link { font-size: 11.5px; color: var(--primary); text-decoration: none; }
+.link:hover { text-decoration: underline; }
+
+/* ── кнопки ────────────────────────────────────────────────── */
+
+/*
+ * Панель действий: сверху одна главная кнопка, под ней — строка мелких
+ * текстовых ссылок. Всё второстепенное живёт в этой строке и не спорит
+ * с главным за внимание.
+ */
+.actions {
+  display: flex;
+  flex-direction: column;
+  flex: none;
+  gap: 10px;
+  padding: 14px var(--gutter) 16px;
+  border-top: 1px solid var(--border-soft);
+}
+
+button,
+a.button {
+  display: block;
+  width: 100%;
+  padding: 11px 14px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: none;
+  color: var(--text);
+  font: 500 13px var(--font);
+  text-align: center;
+  text-decoration: none;
+  cursor: pointer;
+  transition: background var(--duration), border-color var(--duration), color var(--duration);
+}
+button:hover:not(:disabled),
+a.button:hover { background: var(--card-bg-hover); border-color: var(--border-strong); }
+button:active:not(:disabled) { background: var(--card-bg-active); }
+button:disabled { opacity: 0.45; cursor: default; }
+button:focus-visible,
+a:focus-visible { outline: 1px solid var(--text-muted); outline-offset: 2px; }
+
+/* Ссылка-кнопка: текст и стрелка «наружу» в одну строку. */
+a.button { display: flex; align-items: center; justify-content: center; gap: 7px; }
+
+/* Подтверждение — главное действие экрана, и выглядеть должно так. */
+button.primary,
+a.button.primary {
+  border-color: transparent;
+  background: var(--primary-fill);
+  color: var(--primary-ink);
+  font-weight: 500;
+}
+button.primary:hover:not(:disabled),
+a.button.primary:hover { background: var(--primary-fill-hover); border-color: transparent; }
+button.primary:active:not(:disabled) { background: var(--primary-fill-active); }
+
+/* Строка второстепенных действий под главной кнопкой. */
+.action-links {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: center;
+  gap: 2px 4px;
+}
+.action-links button {
+  width: auto;
+  padding: 6px 10px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: none;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--text-muted);
+}
+.action-links button:hover:not(:disabled) { background: var(--card-bg); color: var(--text-secondary); }
+.action-links button.danger { color: var(--sell); }
+.action-links button.danger:hover:not(:disabled) { background: var(--sell-soft); color: var(--sell); }
+.action-links .sep { color: var(--text-faint); font-size: 11px; user-select: none; }
+

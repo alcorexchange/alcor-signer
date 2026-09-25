@@ -1,0 +1,28 @@
+// Хеши ABI контрактов, которые vault читает сам: sha256 сырых байтов, как
+// `abi_hash` на чейне. Сгенерировано `yarn abis` — руками не править.
+//
+// Разошёлся хеш — vault предупреждает и даёт подписать (`abiWarnings` в
+// sign.js), а Auto sign на таком контракте уходит в окно.
+
+export const PINNED_ABIS = {
+  "telos": {
+    "eosio": "fccb1a515b98d2232a1227279666d9a3fcd41f67fafa0d75212cc0a282564361",
+    "eosio.token": "fb8452c70aa203505592aef25b696acaa1aee58805888cc9aae024b4c03af91e",
+    "swap.alcor": "1f427e36adbb87f31fff4ab8c69f29349eaa4eedfa49f0624d67d2835fe713e8",
+    "eostokensdex": "c88d9b5dd8c987356e565594b85c0b288b68566d40630d89ae7d1f155a3b4df1"
+  },
+  "wax": {
+    "eosio": "945e9057c79e54b0c9dbff6a495fd84e58dba97eaf96bd326147207c2447b9bd",
+    "eosio.token": "b52fab4efd51790f231ac36b4d44b440e3fb34c8f6d7fb5929ddde69f25647e7",
+    "swap.alcor": "1f427e36adbb87f31fff4ab8c69f29349eaa4eedfa49f0624d67d2835fe713e8",
+    "alcordexmain": "c88d9b5dd8c987356e565594b85c0b288b68566d40630d89ae7d1f155a3b4df1",
+    "alcorotcswap": "bdab94696828955b2853cb1c3b8a0fd9cb8cdcdd31cbe07f991090eb5c0deb74",
+    "liquid.alcor": "4742294631d51bd40586de1d88bca778c829a711c558e76415bdda22802a7bb2"
+  },
+  "xpr": {
+    "eosio": "cb762c58e4823e73a9d677721929305657e1134f0d34a2f318f7c9ca638eaba8",
+    "eosio.token": "bf13acab1b4bc2676ef6f0afcf1765ab5db3ffa1ac18453a628e1e65fe26e045",
+    "swap.alcor": "1f427e36adbb87f31fff4ab8c69f29349eaa4eedfa49f0624d67d2835fe713e8",
+    "alcor": "8b43316996c04b0464e3042192dcc4c55a1dea6bef05349e10d434cb648e1c15"
+  }
+}

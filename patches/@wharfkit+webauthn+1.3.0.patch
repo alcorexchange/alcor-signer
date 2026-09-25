@@ -1,0 +1,44 @@
+diff --git a/node_modules/@wharfkit/webauthn/lib/eosio-webauthn.js b/node_modules/@wharfkit/webauthn/lib/eosio-webauthn.js
+index 6dae0e3..7979af5 100644
+--- a/node_modules/@wharfkit/webauthn/lib/eosio-webauthn.js
++++ b/node_modules/@wharfkit/webauthn/lib/eosio-webauthn.js
+@@ -9804,12 +9804,11 @@ defineCurve('ed25519', {
+   ],
+ });
+ 
+-var pre;
+-try {
+-  pre = require('./precomputed/secp256k1');
+-} catch (e) {
+-  pre = undefined;
+-}
++// Patched: the precomputed table is an optional speed-up elliptic already
++// treats as absent-friendly, and this bundle ships without the file. The
++// require is unresolvable, and Nitro's rollup refuses to inline what it cannot
++// resolve — so the optional load is dropped rather than merely caught.
++var pre = undefined;
+ 
+ defineCurve('secp256k1', {
+   type: 'short',
+diff --git a/node_modules/@wharfkit/webauthn/lib/eosio-webauthn.m.js b/node_modules/@wharfkit/webauthn/lib/eosio-webauthn.m.js
+index 2177807..6eabe40 100644
+--- a/node_modules/@wharfkit/webauthn/lib/eosio-webauthn.m.js
++++ b/node_modules/@wharfkit/webauthn/lib/eosio-webauthn.m.js
+@@ -9800,12 +9800,11 @@ defineCurve('ed25519', {
+   ],
+ });
+ 
+-var pre;
+-try {
+-  pre = require('./precomputed/secp256k1');
+-} catch (e) {
+-  pre = undefined;
+-}
++// Patched: the precomputed table is an optional speed-up elliptic already
++// treats as absent-friendly, and this bundle ships without the file. The
++// require is unresolvable, and Nitro's rollup refuses to inline what it cannot
++// resolve — so the optional load is dropped rather than merely caught.
++var pre = undefined;
+ 
+ defineCurve('secp256k1', {
+   type: 'short',
