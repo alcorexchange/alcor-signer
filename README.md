@@ -203,8 +203,34 @@ Alcor Signer и один раз на аккаунт — при автомати�
 yarn dev                 # https://sign.localhost:8443
 yarn csp [dev]           # CSP окружения, по умолчанию прод
 yarn abis [--check]      # закрепить хеши ABI / сверить их (для деплоя)
+yarn headers [--check]   # public/_headers для Cloudflare из headers.mjs
 yarn vendor              # пересобрать вендор-бандл и vendor/HASH
 ```
+
+### Деплой
+
+Cloudflare Worker без кода — только статика из `public/` (`wrangler.jsonc`),
+на своём домене `sign.alcor.exchange`, без `*.workers.dev` и адресов версий.
+Отдельный проект, не тот же, что у app: сборка app с её тысячей пакетов не
+должна иметь доступа к файлам vault.
+
+Workers Builds, подключённый к GitHub, выкатывает `master`:
+
+| настройка | значение |
+|---|---|
+| ветка | `master`, сборки других веток выключены |
+| build command | пусто |
+| deploy command | `npx wrangler@4.133.0 deploy` |
+| build variable | `SKIP_DEPENDENCY_INSTALL=1` |
+
+Сборки нет и `node_modules` в деплое нет намеренно: выкатывается ровно то, что
+лежит в гите, и код из npm не может поправить файлы перед заливкой.
+
+Заголовки прод берёт из `public/_headers` — он генерируется из `headers.mjs`
+(`yarn headers`, коммитится; `yarn headers --check` сверяет). Поменял
+`headers.mjs` или ноду в `chain.js` — `yarn headers` и коммит.
+
+Откат — Deployments → Rollback в дашборде Worker'а, мгновенно.
 
 ### ABI
 

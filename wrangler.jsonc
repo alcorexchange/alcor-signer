@@ -1,0 +1,16 @@
+// Деплой vault: Cloudflare Worker без кода, только статика из public/.
+//
+// Собирать нечего: выкатывается ровно то, что лежит в гите. Workers Builds
+// ставится с SKIP_DEPENDENCY_INSTALL=1 — node_modules в деплое не нужен, и
+// код из npm не получает шанса поправить файлы перед заливкой (README, «Деплой»).
+{
+  "$schema": "https://unpkg.com/wrangler@4.133.0/config-schema.json",
+  "name": "alcor-signer",
+  "compatibility_date": "2026-09-01",
+  "assets": { "directory": "./public" },
+  "routes": [{ "pattern": "sign.alcor.exchange", "custom_domain": true }],
+  // Ни *.workers.dev, ни адресов версий: vault живёт на одном адресе. На
+  // любом другом он молчит (ENVIRONMENTS в chain.js), но и открываться там незачем.
+  "workers_dev": false,
+  "preview_urls": false
+}
