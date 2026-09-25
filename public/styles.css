@@ -187,6 +187,22 @@ header {
 /* Логотип — один знак и одна надпись, капсом с разрядкой. */
 .brand { display: flex; align-items: center; gap: 9px; }
 .brand-mark { display: block; width: 20px; height: 22px; }
+/* Знак — он же путь на главную: кнопка без вида кнопки. */
+button.brand-home {
+  display: inline-flex;
+  align-items: center;
+  gap: inherit;
+  width: auto;
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+}
+button.brand-home:hover:not(:disabled),
+button.brand-home:active:not(:disabled) { background: none; }
+button.brand-home:hover .brand-name { color: var(--text); }
+
 .brand-name { font-size: 12px; font-weight: 500; letter-spacing: 0.14em; text-transform: uppercase; }
 
 /*
@@ -497,8 +513,8 @@ button.switch:disabled { opacity: 0.5; cursor: default; }
 .list-count { font-size: 14px; font-weight: 400; color: var(--text-faint); letter-spacing: 0; }
 
 /*
- * Действие в строке заголовка — мятный контур, как Add / Claim в app. Ниже
- * заголовка ростом и тише рамкой: заметна, но не спорит с «Accounts».
+ * Действие в строке заголовка — мятный текст без рамки: мятный текст в мятной
+ * рамке на чёрном читается как свечение. Цвет — в одном месте.
  */
 button.accent {
   display: inline-flex;
@@ -506,8 +522,8 @@ button.accent {
   gap: 4px;
   width: auto;
   height: 28px;
-  padding: 0 10px 0 8px;
-  border: 1px solid var(--primary-line);
+  padding: 0 4px;
+  border: none;
   border-radius: var(--radius-md);
   background: none;
   font-size: 12px;
@@ -516,7 +532,9 @@ button.accent {
   color: var(--primary);
 }
 button.accent svg { flex: none; }
-button.accent:hover:not(:disabled) { background: none; border-color: var(--primary-border); color: var(--primary-hover); }
+/* Ховер — текст светлее: мята, смешанная с основным текстом. Соседний оттенок
+   мяты (`--primary-hover`) глазом не отличить. */
+button.accent:hover:not(:disabled) { background: none; color: color-mix(in srgb, var(--primary) 55%, var(--text)); }
 
 /*
  * Строка аккаунта. Свёрнута — кто и сколько. Раскрыта — настройки под ней,

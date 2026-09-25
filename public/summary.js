@@ -25,6 +25,7 @@ import { alcorContracts, isCpuPayerNoop } from './chain.js'
  *   key?: string,
  *   out?: { amount: Amount, to: string, note?: string },
  *   receive?: Amount,
+ *   rows?: { dir: 'out' | 'in', label: string, amount: string, sub: string }[],
  *   risks: Risk[],
  * }} Leg
  *
@@ -47,6 +48,8 @@ export function summarize(chain, actions) {
 
   let title = `${legs.length} actions`
   if (titles.length === 1) title = groups.length > 1 ? `${titles[0]} ×${groups.length}` : titles[0]
+  // Две разные операции — обе по имени: «Remove liquidity + Collect fees».
+  else if (titles.length === 2) title = titles.join(' + ')
 
   return {
     title,
@@ -72,7 +75,7 @@ export function isAlcorTrade(chain, actions) {
 
   return actions.every((action) => {
     if (isCpuPayerNoop(chain, action)) return true
-    if (action.name !== 'transfer') return alcor.has(String(action.account))
+    if (action.name !== 'transfer') return alcor.has(String(action.account)) && !givesAway(chain, action)
 
     const to = String(action.data?.to ?? '')
     if (!alcor.has(to)) return false
@@ -81,6 +84,18 @@ export function isAlcorTrade(chain, actions) {
     const [, , recipient] = String(action.data?.memo ?? '').split('#')
     return !recipient || recipient === String(action.data?.from ?? '')
   })
+}
+
+/**
+ * Экшен контракта Alcor, который отдаёт что-то другому аккаунту: позицию
+ * (`transferpos`) или комиссии не владельцу (`collect`). Это уже не своя
+ * сделка — без окна не подписывается.
+ */
+function givesAway(chain, action) {
+  if (String(action.account) !== chain.alcor.swap) return false
+  if (action.name === 'transferpos') return true
+  if (action.name === 'collect') return String(action.data?.recipient ?? '') !== String(action.data?.owner ?? '')
+  return false
 }
 
 /**
@@ -115,6 +130,7 @@ const SPOT_CANCELS = new Set(['cancelbuy', 'cancelsell'])
 const DECODERS = [
   { match: (chain, a) => a.account === 'eosio' && a.name === 'updateauth', decode: permissionChange },
   { match: (chain, a) => a.account === chain.alcor.spot && SPOT_CANCELS.has(a.name), decode: spotCancel },
+  { match: (chain, a) => a.account === chain.alcor.swap && Object.hasOwn(POOL_ACTIONS, a.name), decode: poolAction },
   { match: (chain, a) => a.name === 'transfer', decode: transfer },
 ]
 
@@ -146,6 +162,93 @@ function permissionChange(chain, action) {
 function spotCancel(chain, action) {
   const side = action.name === 'cancelbuy' ? 'buy' : 'sell'
   return { title: `Cancel ${side} order`, risks: [] }
+}
+
+// ── пулы swap.alcor: ликвидность, комиссии, фарм ─────────────────────────
+//
+// Суммы здесь — `asset` без контракта: чей токен, знает пул, а не экшен.
+// Поэтому строка без эмитента, а пул называется номером.
+
+const assetRow = (dir, label, text, sub) => {
+  const amount = parseAmount(text, null)
+  return amount ? { dir, label, amount: formatAmount(amount), sub } : null
+}
+
+const pool = (data) => `pool #${data.poolId}`
+
+/** Экшены пулов, которые человек делает сам, — по имени экшена. */
+const POOL_ACTIONS = {
+  addliquid: (data) => ({
+    title: 'Add liquidity',
+    rows: [
+      assetRow('out', 'You add up to', data.tokenADesired, pool(data)),
+      assetRow('out', 'You add up to', data.tokenBDesired, pool(data)),
+    ],
+    risks: [],
+  }),
+  subliquid: (data) => ({
+    title: 'Remove liquidity',
+    rows: [
+      assetRow('in', 'You receive at least', data.tokenAMin, pool(data)),
+      assetRow('in', 'You receive at least', data.tokenBMin, pool(data)),
+    ],
+    risks: [],
+  }),
+  // Максимумы в collect — «забрать всё», обычно огромные: сумм не показываем.
+  collect: (data) => ({
+    title: 'Collect fees',
+    rows: [{ dir: 'in', label: 'Earned fees', amount: 'all', sub: pool(data) }],
+    risks:
+      String(data.recipient) === String(data.owner)
+        ? []
+        : [{ kind: 'danger', text: `The fees go to ${data.recipient}, not to ${data.owner}.` }],
+  }),
+  withdraw: (data) => ({
+    title: 'Withdraw from Alcor',
+    rows: [assetRow('in', 'You receive', data.assetInput?.quantity, `from ${data.assetInput?.contract} token`)],
+    risks: [],
+  }),
+  getreward: (data) => ({
+    title: 'Claim farm reward',
+    rows: [{ dir: 'in', label: 'Farm reward', amount: 'all earned', sub: `position #${data.posId}` }],
+    risks: [],
+  }),
+  stake: (data) => ({
+    title: 'Stake in farm',
+    rows: [{ dir: 'out', label: 'Position', amount: `#${data.posId}`, sub: 'into the farm' }],
+    risks: [],
+  }),
+  unstake: (data) => ({
+    title: 'Unstake from farm',
+    rows: [{ dir: 'in', label: 'Position', amount: `#${data.posId}`, sub: 'out of the farm' }],
+    risks: [],
+  }),
+  unstakepos: (data) => ({
+    title: 'Unstake from farm',
+    rows: [{ dir: 'in', label: 'Position', amount: `#${data.posId}`, sub: 'out of the farm' }],
+    risks: [],
+  }),
+  // Позиция — это ликвидность целиком: кто её держит, тот и выводит.
+  transferpos: (data) => ({
+    title: 'Transfer position',
+    rows: [],
+    risks: [{ kind: 'danger', text: `The position in ${pool(data)} goes to ${data.to}. Whoever holds it owns the liquidity.` }],
+  }),
+  lockpos: (data) => ({
+    title: 'Lock position',
+    rows: [],
+    risks: [
+      {
+        kind: 'warn',
+        text: `The liquidity in ${pool(data)} stays locked until ${new Date(Number(data.unlockTime) * 1000).toUTCString()}.`,
+      },
+    ],
+  }),
+}
+
+function poolAction(chain, action) {
+  const leg = POOL_ACTIONS[action.name](action.data ?? {})
+  return { ...leg, rows: leg.rows.filter(Boolean) }
 }
 
 function unknown(action) {
@@ -311,7 +414,7 @@ function merge(legs) {
  * @returns {{ dir: 'out' | 'in', label: string, amount: string, sub: string }[]}
  */
 function flowsOf(chain, group) {
-  const flows = []
+  const flows = [...(group.rows ?? [])]
   const issuer = (amount) => (amount.contract === chain.systemToken.contract ? null : `${amount.contract} token`)
 
   if (group.out) {

@@ -82,12 +82,15 @@ const logomark = () => el('img', { className: 'brand-mark', src: './signer-mark.
  * «Назад» живёт здесь, а не у заголовка: шапка не прокручивается, стрелка всегда
  * на месте, а заголовок экрана стоит по общей левой линии с содержимым.
  */
-export const chrome = (back) =>
+/** Шапка: «назад», знак — он же путь на главную (`home`), и адрес окна. */
+export const chrome = (back, home) =>
   el('header', {}, [
     el('div', { className: 'brand' }, [
       back ? backButton(back) : null,
-      logomark(),
-      el('span', { className: 'brand-name', textContent: 'Alcor Signer' }),
+      el('button', { type: 'button', className: 'brand-home', title: 'All accounts', onclick: home }, [
+        logomark(),
+        el('span', { className: 'brand-name', textContent: 'Alcor Signer' }),
+      ]),
     ]),
     hostBadge(),
   ])
@@ -108,8 +111,10 @@ function hostBadge() {
   return el('div', { className: 'host', title: 'Check this address before you sign' }, [icon(ICONS.lock, 11), ...address])
 }
 
-/** Заголовок экрана и строка под ним — что происходит и по чьей просьбе. */
-/** Заголовок экрана. `title` — строка или части, среди которых может быть `accent(…)`. */
+/**
+ * Заголовок экрана и строка под ним — что происходит и по чьей просьбе.
+ * `title` — строка или части, среди которых может быть `accent(…)`.
+ */
 export const pageTitle = (title, sub) =>
   el('div', { className: 'page-head' }, [
     el('h1', { className: 'page-title' }, Array.isArray(title) ? title : [title]),

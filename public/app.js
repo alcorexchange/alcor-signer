@@ -139,7 +139,7 @@ function screen({ body, actions = [], links = [], back }) {
 
   goBack = back ?? null
   appRoot.replaceChildren(
-    chrome(back),
+    chrome(back, goHome),
     el('main', {}, content),
     ...(buttons.length || small.length ? [actionBar(buttons, small)] : [])
   )
@@ -147,6 +147,21 @@ function screen({ body, actions = [], links = [], back }) {
 
 /** «Назад» текущего экрана — для Esc. Экран без «назад» его обнуляет. */
 let goBack = null
+
+/**
+ * Что сказать app, если человек уходит на главную, не дойдя до конца запроса.
+ * По умолчанию — «отменено»: иначе app ждёт ответа, пока окно не закроют.
+ * Экран, которому есть что ответить и так (режим подписи), ставит своё.
+ */
+let leaveRequest = null
+
+/** Знак в шапке — на главную из любого экрана, с ответом app, если он ждёт. */
+function goHome() {
+  const leave = leaveRequest
+  leaveRequest = null
+  leave?.()
+  homeScreen()
+}
 
 /**
  * Esc — назад, если экрану есть куда. Не из поля ввода: там Esc жмут, чтобы
@@ -1778,7 +1793,12 @@ function importConfirm(passkey, on, privateKey, publicKey, found, request = null
 
   screen({
     body: [
-      pageTitle('Move to a passkey', `${on.name} · key ${shortKey(publicKey)}`),
+      // Один аккаунт — его имя в заголовке, как на экране привязки; несколько —
+      // выбор ниже, галками.
+      pageTitle(
+        accounts.size === 1 ? ['Move ', accent([...accounts.keys()][0]), ' to a passkey'] : 'Move to a passkey',
+        `${on.name} · key ${shortKey(publicKey)}`
+      ),
       section(accounts.size > 1 ? 'accounts' : 'account', [el('div', { className: 'checks' }, rows)]),
       section('options', [
         card([
@@ -2629,6 +2649,8 @@ function settingsScreen({ request, reply }) {
     reply(level ? { ok: true, level } : { ok: false, error: 'Closed before the signing mode was known' })
   }
   addEventListener('pagehide', answer)
+  // Ушёл на главную — app узнаёт выбранный режим, а не «отменено».
+  leaveRequest = answer
   const close = () => {
     answer()
     window.close()
@@ -2676,7 +2698,7 @@ function settingsScreen({ request, reply }) {
             ]),
           ],
           actions: [button('Done', close, 'primary')],
-          links: [['All accounts', () => homeScreen()]],
+          back: goHome,
         })
 
       draw()
@@ -2817,6 +2839,20 @@ if (isEmbedded()) {
   })
 
   const incoming = await pending
+
+  // Ответ app уходит один раз: первый решает, остальные — поздние (уход на
+  // главную после ответа, pagehide после «Done»).
+  if (!incoming.timedOut) {
+    const send = incoming.reply
+    let answered = false
+    incoming.reply = (result) => {
+      if (answered) return
+      answered = true
+      leaveRequest = null
+      send(result)
+    }
+    leaveRequest = () => incoming.reply({ ok: false, error: 'Cancelled by the user' })
+  }
 
   if (incoming.timedOut) {
     timeoutScreen()
