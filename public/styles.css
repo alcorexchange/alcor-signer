@@ -201,6 +201,7 @@ header {
 /* ── заголовок экрана ──────────────────────────────────────── */
 
 .page-title { margin: 0; font-size: 18px; font-weight: 500; line-height: 1.3; letter-spacing: -0.02em; word-break: break-word; }
+.page-title .accent { color: var(--primary); }
 .page-sub { margin-top: 4px; font-size: 12px; line-height: 1.55; color: var(--text-muted); }
 
 /* «Назад» — стрелка в шапке, перед знаком: не прокручивается и не сдвигает заголовок. */

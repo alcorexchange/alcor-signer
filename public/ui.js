@@ -109,11 +109,15 @@ function hostBadge() {
 }
 
 /** Заголовок экрана и строка под ним — что происходит и по чьей просьбе. */
+/** Заголовок экрана. `title` — строка или части, среди которых может быть `accent(…)`. */
 export const pageTitle = (title, sub) =>
   el('div', { className: 'page-head' }, [
-    el('h1', { className: 'page-title', textContent: title }),
+    el('h1', { className: 'page-title' }, Array.isArray(title) ? title : [title]),
     sub ? el('div', { className: 'page-sub', textContent: sub }) : null,
   ])
+
+/** Слово в заголовке, о котором экран, — имя аккаунта. Цветом, без подложки. */
+export const accent = (text) => el('span', { className: 'accent', textContent: text })
 
 /**
  * Стопка блоков с одним шагом между ними. Отступы — у стопки, не у блоков:
@@ -689,7 +693,16 @@ function copyButton(value) {
  * Ни автозаполнения, ни проверки орфографии, ни автокапитализации: словарь
  * браузера и менеджер паролей не должны увидеть то, что сюда вставляют.
  */
-export function secretInput({ placeholder, multiline = false }) {
+/**
+ * Поле для секрета: приватного ключа или 24 слов.
+ *
+ * Вставленный секрет стирается из буфера обмена: там он живёт дольше, чем
+ * нужен, его видит любое приложение с доступом к буферу, и его легко вставить
+ * потом не туда. История буфера (менеджеры буфера, Windows) — вне досягаемости.
+ * Вставка — жест пользователя, поэтому запись в буфер браузер разрешает;
+ * `onCleared` узнаёт, что стёрлось, а не вышло — молчит: поле работает и так.
+ */
+export function secretInput({ placeholder, multiline = false, onCleared = () => {} }) {
   const node = el(multiline ? 'textarea' : 'input', {
     className: 'field-input',
     placeholder,
@@ -703,6 +716,13 @@ export function secretInput({ placeholder, multiline = false }) {
   node.setAttribute('data-lpignore', 'true')
   if (multiline) node.rows = 4
   else node.type = 'password'
+
+  node.addEventListener('paste', () => {
+    navigator.clipboard
+      ?.writeText('')
+      .then(onCleared)
+      .catch(() => {})
+  })
 
   return node
 }

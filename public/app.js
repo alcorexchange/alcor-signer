@@ -15,6 +15,7 @@
 
 import {
   ICONS,
+  accent,
   actionBar,
   avatar,
   banner,
@@ -178,7 +179,7 @@ function failure(error) {
  * `run(work)` сам показывает успех и уходит дальше; `work` — стопка под
  * заголовком, куда он пишет ход дела.
  *
- * @param {{ title: string, sub?: string, lead?: HTMLElement, busy: string,
+ * @param {{ title: string | (string | Node)[], sub?: string, lead?: HTMLElement, busy: string,
  *   run: (work: HTMLElement) => Promise<unknown>, back?: () => unknown,
  *   cancel?: [string, () => unknown] }} job
  */
@@ -1686,7 +1687,11 @@ function restoreScreen() {
  */
 function importScreen(passkey, request = null) {
   const out = stack([])
-  const input = secretInput({ placeholder: 'PVT_K1_… or 5…' })
+  const cleared = el('span', { className: 'hint-quiet', textContent: 'Used once, never stored.' })
+  const input = secretInput({
+    placeholder: 'PVT_K1_… or 5…',
+    onCleared: () => (cleared.textContent = 'Used once, never stored. Cleared from your clipboard.'),
+  })
   let network = chain
 
   screen({
@@ -1705,7 +1710,7 @@ function importScreen(passkey, request = null) {
             'Paste it only here, on ',
             el('span', { className: 'hint-host', textContent: location.host }),
             '. ',
-            el('span', { className: 'hint-quiet', textContent: 'Used once, never stored.' }),
+            cleared,
           ]),
         ]),
       ]),
@@ -2117,14 +2122,15 @@ function enrollScreen({ request, reply }) {
   // Режим с самого начала: Fast по умолчанию — ради него люди и переходят.
   let mode = fastAllowed ? 'fast' : 'passkey'
 
-  const title = `Add a passkey to ${name}`
+  // Функцией: узел имени живёт на одном экране, а заголовок рисуется на нескольких.
+  const title = () => ['Add a passkey to ', accent(name)]
 
   // Отменил Face ID за быстрые сделки — «Try again» спросит его ещё раз,
   // «Back» вернёт к экрану, где тумблер можно выключить и обойтись без него.
   // Назад — с нуля: ключей на устройстве могло стать больше, чем было.
   const use = (passkey) =>
     attempt({
-      title,
+      title: title(),
       sub: chain.name,
       busy: mode === 'passkey' ? 'Sending the key' : 'Browser key — confirm with your passkey',
       back: () => enrollScreen({ request, reply }),
@@ -2168,7 +2174,7 @@ function enrollScreen({ request, reply }) {
     : null
 
   const intro = [
-    pageTitle(title, `${chain.name} · requested by ${from}`),
+    pageTitle(title(), `${chain.name} · requested by ${from}`),
     steps([
       ['Confirm with your passkey here', 'Creates the key. Nothing is signed'],
       ['Approve in your wallet', 'Your wallet adds the key and keeps working'],
