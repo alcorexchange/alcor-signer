@@ -1490,6 +1490,10 @@ function importScreen(passkey, flow = null) {
             cleared,
           ]),
         ]),
+        // Why a private key at all: without this, pasting one reads like the scam it usually is.
+        el('div', { className: 'hint hint-quiet' }, [
+          'Why: it signs one transaction that adds your passkey to the account. Then it is erased — nobody keeps it, here or anywhere.',
+        ]),
       ]),
       out,
     ],
