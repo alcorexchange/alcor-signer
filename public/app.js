@@ -170,10 +170,14 @@ async function attempt(job) {
   }
 }
 
-const cancelLink = (reply, text = 'Cancel', error = 'Cancelled by the user') => [
+// `rejected` tells the app the user said no, as opposed to something failing: a
+// failure is shown and counted as one, a refusal is not.
+const CANCELLED = { error: 'Cancelled by the user', rejected: true }
+
+const cancelLink = (reply, text = 'Cancel', result = CANCELLED) => [
   text,
   () => {
-    reply({ ok: false, error })
+    reply({ ok: false, ...result })
     window.close()
   },
 ]
@@ -2134,11 +2138,11 @@ async function confirmScreen({ request, reply }) {
     // A node failure isn't a rejection: the request is alive, and a retry rebuilds it.
     screen({
       body: [
-        state({ icon: ICONS.alert, tone: 'amber', title: 'Could not build it', text: 'The network node did not answer.' }),
+        state({ icon: ICONS.alert, tone: 'amber', title: 'Could not build it', text: 'Nothing was signed.' }),
         failure(error),
       ],
       actions: [button('Try again', () => confirmScreen({ request, reply }), 'primary')],
-      links: [cancelLink(reply, 'Cancel', String(error?.message ?? error))],
+      links: [cancelLink(reply, 'Cancel', { error: String(error?.message ?? error) })],
     })
     return
   }
@@ -2317,7 +2321,7 @@ async function confirmScreen({ request, reply }) {
       [
         'Reject',
         () => {
-          reply({ ok: false, error: 'Rejected by the user' })
+          reply({ ok: false, error: 'Rejected by the user', rejected: true })
           window.close()
         },
         'danger',
@@ -2339,7 +2343,7 @@ function settingsScreen({ request, reply }) {
   const answer = () => {
     if (replied) return
     replied = true
-    reply(level ? { ok: true, level } : { ok: false, error: 'Closed before the signing mode was known' })
+    reply(level ? { ok: true, level } : { ok: false, error: 'Closed before the signing mode was known', rejected: true })
   }
   addEventListener('pagehide', answer)
   leaveRequest = answer
@@ -2524,7 +2528,7 @@ if (isEmbedded()) {
       leaveRequest = null
       send(result)
     }
-    leaveRequest = () => incoming.reply({ ok: false, error: 'Cancelled by the user' })
+    leaveRequest = () => incoming.reply({ ok: false, ...CANCELLED })
   }
 
   if (incoming.timedOut) {

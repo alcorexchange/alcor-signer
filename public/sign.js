@@ -61,6 +61,11 @@ export async function buildTransaction(chain, actions) {
       abis: await Promise.all(
         contracts.map(async (contract) => {
           const raw = Bytes.from((await client.v1.chain.get_raw_abi(contract)).abi.array)
+          // No ABI on chain: the contract was removed. Without it nobody can encode
+          // the action — decoding would fail with a bare "Read past end of buffer".
+          if (!raw.length) {
+            throw new Error(`${contract} has no contract on ${chain.name} any more — it was removed, so nothing can be sent to it.`)
+          }
           return {
             contract: Name.from(contract),
             abi: Serializer.decode({ data: raw, type: ABI }),
