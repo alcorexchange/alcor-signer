@@ -9,13 +9,13 @@
 
 import { createHash } from 'node:crypto'
 import { readFile, writeFile } from 'node:fs/promises'
-import { CHAINS, alcorContracts } from '../public/chain.js'
+import { CHAINS } from '../public/chain.js'
 
 const FILE = new URL('../public/abis.js', import.meta.url)
 const check = process.argv.includes('--check')
 
 const contractsOf = (chain) =>
-  [...new Set(['eosio', chain.systemToken.contract, ...alcorContracts(chain), chain.cpuPayer?.contract])].filter(Boolean)
+  [...new Set(['eosio', chain.systemToken.contract, ...Object.values(chain.alcor), chain.cpuPayer?.contract])].filter(Boolean)
 
 async function rawAbiHash(rpc, account) {
   const response = await fetch(`${rpc}/v1/chain/get_raw_abi`, {

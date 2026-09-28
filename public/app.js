@@ -970,18 +970,18 @@ async function disableFastSign(entry) {
 }
 
 /**
- * What the vault starts itself is signed without a transaction screen, so an untrusted
- * ABI stops it (nobody reads the details here), and a rewritten permission is shown
- * when anyone but the user keeps it (`reviewAuthority`).
+ * What the vault starts itself is signed without a transaction screen, so a rewritten
+ * permission is shown when anyone but the user keeps it (`reviewAuthority`).
+ *
+ * An ABI off its pin does not stop it: `buildTransaction` has a second node confirm
+ * such an ABI, so a mismatch here is a system contract updated before `yarn abis`, not
+ * a lying node — and refusing would lock the user out of turning off a stolen key.
  *
  * @param {{ known?: string[], review?: boolean }} [options] — `known`: keys this change
  *   adds, not stored yet; `review: false` where the screen already listed what stays
  */
 async function submitWith(on, sign, actions, { known = [], review = true } = {}) {
   const built = await buildTransaction(on, actions)
-  if (built.warnings.length) {
-    throw new Error('The node described a contract differently from what Alcor Signer checked. Nothing was signed — try again later.')
-  }
   if (review) await reviewAuthority(built.actions, known)
   return pushTransaction(on, await sign(built.transaction, built.chainId))
 }

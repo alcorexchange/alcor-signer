@@ -10,11 +10,10 @@ export const PINNED_ABIS = {
     "eostokensdex": "c88d9b5dd8c987356e565594b85c0b288b68566d40630d89ae7d1f155a3b4df1"
   },
   "wax": {
-    "eosio": "945e9057c79e54b0c9dbff6a495fd84e58dba97eaf96bd326147207c2447b9bd",
+    "eosio": "a1683bbeb3418ad502aac045372850b5fcfa0aef494795ac70228f01433273d6",
     "eosio.token": "b52fab4efd51790f231ac36b4d44b440e3fb34c8f6d7fb5929ddde69f25647e7",
     "swap.alcor": "1f427e36adbb87f31fff4ab8c69f29349eaa4eedfa49f0624d67d2835fe713e8",
     "alcordexmain": "c88d9b5dd8c987356e565594b85c0b288b68566d40630d89ae7d1f155a3b4df1",
-    "alcorotcswap": "bdab94696828955b2853cb1c3b8a0fd9cb8cdcdd31cbe07f991090eb5c0deb74",
     "liquid.alcor": "4742294631d51bd40586de1d88bca778c829a711c558e76415bdda22802a7bb2"
   },
   "xpr": {
