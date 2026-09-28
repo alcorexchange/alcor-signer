@@ -462,8 +462,10 @@ Fast ↔ Auto — локально, без транзакции. Лимитов 
 | пулы (`swap.alcor`) | перевод с memo `deposit`; своп `swapexactin`, где получатель — отправитель; `addliquid`, `subliquid`, `collect` себе, `withdraw`, `getreward`, `stake`, `stakelastpos`, `unstake`, `unstakepos` |
 | спот | перевод с memo-ценой `<amount>@<contract>`; `cancelbuy`, `cancelsell` |
 | liquid staking (WAX, `alcor.liquid` в реестре) | перевод с memo `stake` или `withdraw` |
+| системный (`eosio`) | `delegatebw` себе без `transfer`; `undelegatebw`, `stakexpr`, `unstakexpr` себе; `refund`, `voterclaim` |
 
-Не в списке намеренно: `createpool`, `lockpos`, `transferpos`, `getfees`, и
+Не в списке намеренно: `createpool`, `lockpos`, `transferpos`, `getfees`,
+`buyram` и `sellram` (сделка по рыночной цене RAM), стейк на чужой аккаунт, и
 **OTC целиком** — там цена та, что в оффере, а оффер выбирает app: XSS создал бы
 оффер «мусор за весь баланс» и исполнил его. Всё остальное открывает окно: это
 не недоверие к app, а второй взгляд на то, что выходит за рамки торговли.

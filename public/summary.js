@@ -67,7 +67,7 @@ const LIQUID_MEMOS = new Set(['stake', 'withdraw'])
 
 /**
  * An Alcor trade is what Auto sign may sign without a window: an allow-list by contract
- * and action, and for transfers by memo grammar. Anything else — another contract,
+ * and action, and for transfers by memo grammar. Staking and claims for oneself count too. Anything else — another contract,
  * another action, a memo Alcor can't read — opens the window. The summary's risks are
  * checked on top of this (`autoRefusal` in app.js).
  */
@@ -81,6 +81,7 @@ function autoAllows(chain, action) {
   const data = action.data ?? {}
 
   if (name !== 'transfer') {
+    if (contract === 'eosio') return autoSystemAllows(name, data)
     if (contract === chain.alcor.swap) {
       // Fees to someone else are a gift, not a trade.
       return AUTO_POOL_ACTIONS.has(name) && (name !== 'collect' || String(data.recipient) === String(data.owner))
@@ -95,6 +96,17 @@ function autoAllows(chain, action) {
   if (to === chain.alcor.spot) return Boolean(parseAmountAt(memo))
   if (chain.alcor.liquid && to === chain.alcor.liquid) return LIQUID_MEMOS.has(memo)
   return false
+}
+
+// Staking for oneself and claims: the tokens never leave the account. Not here: `buyram`
+// spends at the market price, `sellram` sells at it, a stake with `transfer` gives the
+// tokens away — they go through the window.
+function autoSystemAllows(name, data) {
+  const self = String(data.from) === String(data.receiver)
+
+  if (name === 'delegatebw') return self && data.transfer === false
+  if (['undelegatebw', 'stakexpr', 'unstakexpr'].includes(name)) return self
+  return name === 'refund' || name === 'voterclaim'
 }
 
 // A swap whose proceeds come back to the sender. No recipient is no trade either:
@@ -129,6 +141,7 @@ const SPOT_CANCELS = new Set(['cancelbuy', 'cancelsell'])
 // otherwise the app could call a swap a swap.
 const DECODERS = [
   { match: (chain, a) => a.account === 'eosio' && a.name === 'updateauth', decode: permissionChange },
+  { match: (chain, a) => a.account === 'eosio' && Object.hasOwn(SYSTEM_ACTIONS, a.name), decode: systemAction },
   { match: (chain, a) => a.account === chain.alcor.spot && SPOT_CANCELS.has(a.name), decode: spotCancel },
   { match: (chain, a) => a.account === chain.alcor.swap && Object.hasOwn(POOL_ACTIONS, a.name), decode: poolAction },
   { match: (chain, a) => a.name === 'transfer', decode: transfer },
@@ -248,6 +261,74 @@ const POOL_ACTIONS = {
 
 function poolAction(chain, action) {
   const leg = POOL_ACTIONS[action.name](action.data ?? {})
+  return { ...leg, rows: leg.rows.filter(Boolean) }
+}
+
+// ── eosio: staking, RAM, refunds ──────────────────────────────────────────
+//
+// What the app's resources panel sends. Proton stakes XPR with its own pair of actions.
+
+// A zero side of delegatebw is left out: the row would say "0 WAX".
+const stakeRow = (dir, label, text, sub) => {
+  const row = assetRow(dir, label, text, sub)
+  return row && /[1-9]/.test(row.amount) ? row : null
+}
+
+const forOther = (who, whom, text) => (String(who) === String(whom) ? [] : [{ kind: 'warn', text }])
+
+const SYSTEM_ACTIONS = {
+  delegatebw: (data) => ({
+    title: 'Stake',
+    rows: [
+      stakeRow('out', 'You stake for CPU', data.stake_cpu_quantity, `for ${data.receiver}`),
+      stakeRow('out', 'You stake for NET', data.stake_net_quantity, `for ${data.receiver}`),
+    ],
+    risks: data.transfer
+      ? [{ kind: 'danger', text: `The staked tokens become ${data.receiver}'s. You cannot unstake them back.` }]
+      : forOther(data.from, data.receiver, `The resources go to ${data.receiver}. You can unstake them back.`),
+  }),
+  undelegatebw: (data) => ({
+    title: 'Unstake',
+    rows: [
+      stakeRow('in', 'You unstake from CPU', data.unstake_cpu_quantity, 'claimable after 3 days'),
+      stakeRow('in', 'You unstake from NET', data.unstake_net_quantity, 'claimable after 3 days'),
+    ],
+    risks: [],
+  }),
+  stakexpr: (data) => ({
+    title: 'Stake',
+    rows: [stakeRow('out', 'You stake', data.stake_xpr_quantity, `for ${data.receiver}`)],
+    risks: forOther(data.from, data.receiver, `The resources go to ${data.receiver}. You can unstake them back.`),
+  }),
+  unstakexpr: (data) => ({
+    title: 'Unstake',
+    rows: [stakeRow('in', 'You unstake', data.unstake_xpr_quantity, 'claimable after the unstake period')],
+    risks: [],
+  }),
+  buyram: (data) => ({
+    title: 'Buy RAM',
+    rows: [assetRow('out', 'You pay', data.quant, `RAM for ${data.receiver}`)],
+    risks: forOther(data.payer, data.receiver, `The RAM goes to ${data.receiver}, not to ${data.payer}.`),
+  }),
+  sellram: (data) => ({
+    title: 'Sell RAM',
+    rows: [{ dir: 'out', label: 'You sell', amount: `${groupDigits(String(data.bytes))} bytes`, sub: 'of RAM, at the market price' }],
+    risks: [],
+  }),
+  refund: (data) => ({
+    title: 'Claim unstaked tokens',
+    rows: [{ dir: 'in', label: 'Unstaked tokens', amount: 'all due', sub: `to ${data.owner}` }],
+    risks: [],
+  }),
+  voterclaim: (data) => ({
+    title: 'Claim vote reward',
+    rows: [{ dir: 'in', label: 'Vote reward', amount: 'all earned', sub: `to ${data.owner}` }],
+    risks: [],
+  }),
+}
+
+function systemAction(chain, action) {
+  const leg = SYSTEM_ACTIONS[action.name](action.data ?? {})
   return { ...leg, rows: leg.rows.filter(Boolean) }
 }
 
