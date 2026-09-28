@@ -8,7 +8,7 @@
 // Anything unreadable must say so, never drop out silently.
 
 import { groupDigits } from './format.js'
-import { alcorContracts, isCpuPayerNoop } from './chain.js'
+import { isCpuPayerNoop } from './chain.js'
 
 /**
  * @typedef {{ units: bigint, precision: number, symbol: string, contract: string }} Amount
@@ -44,31 +44,64 @@ export function summarize(chain, actions) {
   }
 }
 
-// An Alcor trade is what Auto sign signs without a window: every action is an Alcor
-// contract action or a transfer into an Alcor contract. A swap whose proceeds go to
-// someone else is a transfer through Alcor, not a trade.
+// A transfer to the pool contract with this memo is credited to the sender's balance
+// there, for `addliquid` to use.
+const DEPOSIT = 'deposit'
+
+// Pool and farm actions on the user's own positions. Not here: `createpool`, `lockpos`,
+// `transferpos`, `getfees` and the admin actions — they go through the window.
+const AUTO_POOL_ACTIONS = new Set([
+  'addliquid',
+  'subliquid',
+  'collect',
+  'withdraw',
+  'getreward',
+  'stake',
+  'stakelastpos',
+  'unstake',
+  'unstakepos',
+])
+
+// Liquid staking takes the network token in and gives it back, both to the sender.
+const LIQUID_MEMOS = new Set(['stake', 'withdraw'])
+
+/**
+ * An Alcor trade is what Auto sign may sign without a window: an allow-list by contract
+ * and action, and for transfers by memo grammar. Anything else — another contract,
+ * another action, a memo Alcor can't read — opens the window. The summary's risks are
+ * checked on top of this (`autoRefusal` in app.js).
+ */
 export function isAlcorTrade(chain, actions) {
-  const alcor = alcorContracts(chain)
-
-  return actions.every((action) => {
-    if (isCpuPayerNoop(chain, action)) return true
-    if (action.name !== 'transfer') return alcor.has(String(action.account)) && !givesAway(chain, action)
-
-    const to = String(action.data?.to ?? '')
-    if (!alcor.has(to)) return false
-    if (to !== chain.alcor.swap) return true
-
-    const [, , recipient] = String(action.data?.memo ?? '').split('#')
-    return !recipient || recipient === String(action.data?.from ?? '')
-  })
+  return actions.every((action) => isCpuPayerNoop(chain, action) || autoAllows(chain, action))
 }
 
-// An Alcor action that gives something to another account: a position, or fees to a non-owner.
-function givesAway(chain, action) {
-  if (String(action.account) !== chain.alcor.swap) return false
-  if (action.name === 'transferpos') return true
-  if (action.name === 'collect') return String(action.data?.recipient ?? '') !== String(action.data?.owner ?? '')
+function autoAllows(chain, action) {
+  const contract = String(action.account)
+  const name = String(action.name)
+  const data = action.data ?? {}
+
+  if (name !== 'transfer') {
+    if (contract === chain.alcor.swap) {
+      // Fees to someone else are a gift, not a trade.
+      return AUTO_POOL_ACTIONS.has(name) && (name !== 'collect' || String(data.recipient) === String(data.owner))
+    }
+    return contract === chain.alcor.spot && SPOT_CANCELS.has(name)
+  }
+
+  const to = String(data.to ?? '')
+  const memo = String(data.memo ?? '')
+
+  if (to === chain.alcor.swap) return memo === DEPOSIT || isOwnSwap(memo, String(data.from ?? ''))
+  if (to === chain.alcor.spot) return Boolean(parseAmountAt(memo))
+  if (chain.alcor.liquid && to === chain.alcor.liquid) return LIQUID_MEMOS.has(memo)
   return false
+}
+
+// A swap whose proceeds come back to the sender. No recipient is no trade either:
+// there is nothing to check the proceeds against.
+function isOwnSwap(memo, from) {
+  const [tag, , recipient] = memo.split('#')
+  return tag === 'swapexactin' && recipient === from
 }
 
 /**
@@ -186,6 +219,11 @@ const POOL_ACTIONS = {
     rows: [{ dir: 'in', label: 'Position', amount: `#${data.posId}`, sub: 'out of the farm' }],
     risks: [],
   }),
+  stakelastpos: () => ({
+    title: 'Stake in farm',
+    rows: [{ dir: 'out', label: 'Position', amount: 'the new one', sub: 'into the farm' }],
+    risks: [],
+  }),
   unstakepos: (data) => ({
     title: 'Unstake from farm',
     rows: [{ dir: 'in', label: 'Position', amount: `#${data.posId}`, sub: 'out of the farm' }],
@@ -250,27 +288,30 @@ function transfer(chain, action) {
 // AMM: `swapexactin#<route>#<recipient>#<minimum>@<contract>#<deadline>`. A split route is
 // one transfer per route; legs merge only if everything but amounts and route matches.
 function swap(chain, { from, to, amount, memo }) {
+  if (memo === DEPOSIT) return { title: 'Deposit to Alcor', out: { amount, to }, risks: [] }
+
   const [tag, , recipient, minimum] = memo.split('#')
   const receive = tag === 'swapexactin' ? parseAmountAt(minimum ?? '') : null
   const title = receive ? `Swap ${amount.symbol} → ${receive.symbol}` : `Swap via ${to}`
+
+  // The recipient lives in the memo: change one word and `to` still looks right. It sits
+  // in the third field whatever the tag, so it is checked before the memo is recognised.
+  const risks =
+    recipient && recipient !== from ? [{ kind: 'danger', text: `The proceeds go to ${recipient}, not to ${from}.` }] : []
 
   if (!receive || !recipient) {
     return {
       title,
       out: { amount, to },
-      risks: [{ kind: 'warn', text: 'Alcor does not recognise this swap memo — there is no way to check what comes back.' }],
+      risks: [
+        ...risks,
+        { kind: 'warn', text: 'Alcor does not recognise this swap memo — there is no way to check what comes back.' },
+      ],
     }
   }
 
-  const risks = []
-
   if (receive.units === 0n) {
     risks.push({ kind: 'danger', text: 'No minimum was set — this swap goes through at any price.' })
-  }
-
-  // The recipient lives in the memo: change one word and `to` still looks right.
-  if (recipient !== from) {
-    risks.push({ kind: 'danger', text: `The proceeds go to ${recipient}, not to ${from}.` })
   }
 
   return {

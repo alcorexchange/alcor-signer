@@ -40,6 +40,9 @@ import {
   rawAction,
   modePicker,
   segmented,
+  setBusy,
+  setDone,
+  signButton,
   signerRow,
   skeleton,
   state,
@@ -76,6 +79,7 @@ import { discoverPasskey } from './discover.js'
 import { PrivateKey } from './vendor/wharfkit.js'
 import {
   accountsForKey,
+  agreedAuthority,
   assertAllowedFromApp,
   balanceFor,
   buildTransaction,
@@ -536,7 +540,7 @@ function setOpen(node, open) {
 // Unlink removes only this browser's own keys: the passkey and its fast sign key.
 async function unlinkPlan(entry) {
   const [auth, hot, owner] = await Promise.all([
-    permissionAuthority(entry.chain, entry.name, entry.permission),
+    agreedAuthority(entry.chain, entry.name, entry.permission),
     loadHotKey(scopeOfEntry(entry)),
     entry.permission === 'owner' ? null : permissionAuthority(entry.chain, entry.name, 'owner').catch(() => null),
   ])
@@ -646,9 +650,13 @@ function unlink(entry, plan) {
     busy: 'Removing — confirm with your passkey',
     back: () => homeScreen(),
     run: async () => {
-      const txid = await submit(entry.chain, entry.passkey, [
-        editKeysAction(entry.name, entry.permission, plan.auth, { remove: plan.remove }),
-      ])
+      // The unlink screen already listed what stays.
+      const txid = await submit(
+        entry.chain,
+        entry.passkey,
+        [editKeysAction(entry.name, entry.permission, plan.auth, { remove: plan.remove })],
+        { review: false }
+      )
       await forgetHotKey(scopeOfEntry(entry))
       rememberValue('levels', accountId(entry.chain.chainId, entry.name), 'passkey')
 
@@ -882,7 +890,7 @@ function randomSlot(except) {
  * @returns {Promise<string | null>} txid, or null when the key was already on chain
  */
 async function enableFastSign(entry, derived = null) {
-  const auth = await permissionAuthority(entry.chain, entry.name, entry.permission)
+  const auth = await agreedAuthority(entry.chain, entry.name, entry.permission)
   if (!auth) throw new Error(`${entry.name} has no ${entry.permission} permission on ${entry.chain.name}`)
 
   // The passkey adds the key itself, so it must be able to sign alone.
@@ -904,9 +912,12 @@ async function enableFastSign(entry, derived = null) {
     }
 
     const next = candidates[randomSlot()]
-    const txid = await submit(entry.chain, entry.passkey, [
-      editKeysAction(entry.name, entry.permission, auth, { add: [next.publicKey] }),
-    ])
+    const txid = await submit(
+      entry.chain,
+      entry.passkey,
+      [editKeysAction(entry.name, entry.permission, auth, { add: [next.publicKey] })],
+      { known: [next.publicKey] }
+    )
 
     await adoptHotKey(secret, scope, next.n)
     return txid
@@ -920,15 +931,18 @@ async function rotateFastSign(entry) {
   const current = await loadHotKey(scope)
   if (!current) throw new Error('Fast sign is not on in this browser')
 
-  const auth = await permissionAuthority(entry.chain, entry.name, entry.permission)
+  const auth = await agreedAuthority(entry.chain, entry.name, entry.permission)
   if (!auth) throw new Error(`${entry.name} has no ${entry.permission} permission on ${entry.chain.name}`)
   const secret = await hotSecret(entry.passkey, scope)
 
   try {
     const next = (await hotCandidates(secret))[randomSlot(current.n)]
-    const txid = await submit(entry.chain, entry.passkey, [
-      editKeysAction(entry.name, entry.permission, auth, { add: [next.publicKey], remove: [current.publicKey] }),
-    ])
+    const txid = await submit(
+      entry.chain,
+      entry.passkey,
+      [editKeysAction(entry.name, entry.permission, auth, { add: [next.publicKey], remove: [current.publicKey] })],
+      { known: [next.publicKey] }
+    )
 
     await adoptHotKey(secret, scope, next.n, { keepAuto: true })
     return txid
@@ -941,7 +955,7 @@ async function rotateFastSign(entry) {
 async function disableFastSign(entry) {
   const scope = scopeOfEntry(entry)
   const key = await loadHotKey(scope)
-  const auth = key ? await permissionAuthority(entry.chain, entry.name, entry.permission) : null
+  const auth = key ? await agreedAuthority(entry.chain, entry.name, entry.permission) : null
 
   let txid = null
   if (key && auth?.keys.some((candidate) => candidate.key === key.publicKey)) {
@@ -955,15 +969,64 @@ async function disableFastSign(entry) {
   return txid
 }
 
-async function submitWith(on, sign, actions) {
+/**
+ * What the vault starts itself is signed without a transaction screen, so an untrusted
+ * ABI stops it (nobody reads the details here), and a rewritten permission is shown
+ * when anyone but the user keeps it (`reviewAuthority`).
+ *
+ * @param {{ known?: string[], review?: boolean }} [options] — `known`: keys this change
+ *   adds, not stored yet; `review: false` where the screen already listed what stays
+ */
+async function submitWith(on, sign, actions, { known = [], review = true } = {}) {
   const built = await buildTransaction(on, actions)
+  if (built.warnings.length) {
+    throw new Error('The node described a contract differently from what Alcor Signer checked. Nothing was signed — try again later.')
+  }
+  if (review) await reviewAuthority(built.actions, known)
   return pushTransaction(on, await sign(built.transaction, built.chainId))
+}
+
+/**
+ * Before the vault rewrites a permission, the user sees who else keeps it: the nodes
+ * agreed on the authority, but only the user knows whether a foreign key belongs there.
+ * Asks only when something stays that this browser doesn't hold.
+ *
+ * @param {object[]} actions — decoded from the built transaction
+ * @param {string[]} known — keys this change adds
+ * @throws when the user says no
+ */
+async function reviewAuthority(actions, known) {
+  const hot = await listHotKeys()
+  const ours = new Set([...loadPasskeys().map((entry) => entry.publicKey), ...hot.map((key) => key.publicKey), ...known])
+
+  for (const action of actions) {
+    if (action.account !== 'eosio' || action.name !== 'updateauth') continue
+
+    const { account, permission, auth } = action.data
+    const foreign = [
+      ...auth.keys.filter((entry) => !ours.has(entry.key)).map((entry) => `Another key: ${shortKey(entry.key)}`),
+      ...auth.accounts.map((entry) => `Another account: ${entry.permission.actor}@${entry.permission.permission}`),
+      ...auth.waits.map((entry) => `A time delay of ${entry.wait_sec} s`),
+    ]
+    if (!foreign.length) continue
+
+    const yes = await confirmDialog({
+      icon: ICONS.alert,
+      tone: 'amber',
+      title: `${account}@${permission} stays shared`,
+      text: 'After this change these keep control of the account alongside you. Continue only if you know every one of them.',
+      details: consequences(foreign),
+      confirm: 'Continue',
+      cancel: 'Cancel',
+    })
+    if (!yes) throw new Error('Cancelled — nothing was signed.')
+  }
 }
 
 const withPasskey = (passkey) => (transaction, chainId) => signTransaction(passkey, transaction, chainId)
 const withKey = (privateKey) => (transaction, chainId) => signTransactionWithKey(privateKey, transaction, chainId)
 
-const submit = (on, passkey, actions) => submitWith(on, withPasskey(passkey), actions)
+const submit = (on, passkey, actions, options) => submitWith(on, withPasskey(passkey), actions, options)
 
 // ─────────────────────────────────────────────── keys
 
@@ -1136,7 +1199,7 @@ async function coverageSection(passkey, root, out) {
           // Locked while in flight: a second click would send another updateauth with a stale owner.
           onclick: async () => {
             row.disabled = true
-            const key = await attachRecovery(entry, owner, allocate, out)
+            const key = await attachRecovery(entry, allocate, out)
             if (!key) {
               row.disabled = false
               return
@@ -1168,14 +1231,20 @@ async function coverageSection(passkey, root, out) {
  *
  * @returns {Promise<{ index: number } | null>} the added key, or null on failure
  */
-async function attachRecovery(entry, owner, allocate, out) {
+async function attachRecovery(entry, allocate, out) {
   out.replaceChildren(status('Adding the words to the account — confirm with your passkey'))
 
   try {
+    // Not the owner read for the list above: that came from one node.
+    const owner = await agreedAuthority(entry.chain, entry.name, 'owner')
+    if (!owner) throw new Error(`${entry.name} has no owner permission on ${entry.chain.name}`)
     const key = await allocate(entry.chain)
-    const txid = await submitWith(entry.chain, withPasskey(entry.passkey), [
-      editKeysAction(entry.name, 'owner', owner, { add: [key.publicKey] }),
-    ])
+    const txid = await submit(
+      entry.chain,
+      entry.passkey,
+      [editKeysAction(entry.name, 'owner', owner, { add: [key.publicKey] })],
+      { known: [key.publicKey] }
+    )
 
     out.replaceChildren(banner('ok', `${entry.name} now comes back with these words`), explorerLink(txid, entry.chain))
     return key
@@ -1198,8 +1267,8 @@ async function attachRecovery(entry, owner, allocate, out) {
  */
 async function moveAccount({ chain: on, name, oldOwnerKey, oldPasskey, newPasskey, newOwnerKey }) {
   const [owner, active, hot] = await Promise.all([
-    permissionAuthority(on, name, 'owner'),
-    permissionAuthority(on, name, 'active'),
+    agreedAuthority(on, name, 'owner'),
+    agreedAuthority(on, name, 'active'),
     loadHotKey(scopeOf(on, name, 'active')),
   ])
 
@@ -1231,7 +1300,7 @@ async function moveAccount({ chain: on, name, oldOwnerKey, oldPasskey, newPasske
     )
   }
 
-  const txid = await submitWith(on, signer.sign, actions)
+  const txid = await submitWith(on, signer.sign, actions, { known: [newPasskey.publicKey, newOwnerKey.publicKey] })
   await forgetHotKeysOf(on, name)
   return { txid, owner: signer.by === 'owner' }
 }
@@ -1619,14 +1688,16 @@ function importConfirm(passkey, on, privateKey, publicKey, found, flow = null) {
 
       const actions = []
       const notes = []
+      // Keys the user holds here: the pasted one, and what this import adds.
+      const known = [publicKey]
       // First free index on chain, then sequential: the chain can't see this transaction's other accounts.
       let nextIndex = null
 
       for (const name of names) {
         const permission = accounts.get(name)
         const [owner, active] = await Promise.all([
-          permissionAuthority(on, name, 'owner'),
-          permissionAuthority(on, name, on.permission),
+          agreedAuthority(on, name, 'owner'),
+          agreedAuthority(on, name, on.permission),
         ])
 
         const addActive = [passkey.publicKey]
@@ -1644,6 +1715,7 @@ function importConfirm(passkey, on, privateKey, publicKey, found, flow = null) {
           addActive.push(next.publicKey)
         }
 
+        known.push(...addActive)
         actions.push(
           editKeysAction(name, on.permission, active, {
             add: addActive,
@@ -1657,6 +1729,7 @@ function importConfirm(passkey, on, privateKey, publicKey, found, flow = null) {
         } else if (permission === 'owner') {
           if (nextIndex === null) nextIndex = (await nextFreeIndex(root, on)).index
           const recovery = ownerKey(root, on, nextIndex++)
+          known.push(recovery.publicKey)
           actions.push(
             editKeysAction(name, 'owner', owner, { add: [recovery.publicKey], remove: removeOld ? [publicKey] : [] })
           )
@@ -1664,7 +1737,7 @@ function importConfirm(passkey, on, privateKey, publicKey, found, flow = null) {
       }
 
       out.replaceChildren(status('Signing with the imported key'))
-      const txid = await submitWith(on, withKey(privateKey), actions)
+      const txid = await submitWith(on, withKey(privateKey), actions, { known })
 
       for (const { secret, scope, n } of hotKeys) await adoptHotKey(secret, scope, n)
 
@@ -2068,37 +2141,55 @@ async function enrollHotKey(passkey, scope) {
 
 // ─────────────────────────────────────────────── signing
 
-// The fast sign key for this signature, or null for the passkey. Only if the chain
-// accepts it right now: it may have been removed elsewhere.
-async function usableTradeKey(actions) {
-  // The CPU payer signs in the app and does not count.
-  const levels = userAuthorizations(chain, actions)
-  if (levels.length !== 1) return null
+/**
+ * How this signature can be signed: the fast sign key if the chain accepts it right now
+ * (it may have been removed elsewhere), else null for the passkey; and whether the mode
+ * can be changed — fast sign is offered only where the passkey signs alone, since it
+ * adds the key itself.
+ *
+ * @param {{ actor: string, permission: string }[]} signers — without the CPU payer
+ * @param {object | null} auth — the first signer's authority; null when the node did not answer
+ */
+async function signingOptions(passkey, signers, auth) {
+  const [signer] = signers
+  if (!signer || !auth) return { session: null, choosable: false }
 
-  const [level] = levels
+  const key =
+    signers.length === 1 ? await loadHotKey(scopeOf(chain, signer.actor, signer.permission)).catch(() => null) : null
+  const session = key && signsAlone(auth, key.publicKey) ? key : null
+  const choosable = Boolean(session) || (signer.permission === chain.permission && signsAlone(auth, passkey.publicKey))
 
-  try {
-    const key = await loadHotKey(scopeOf(chain, level.actor, level.permission))
-    return key && (await keySatisfies(chain, key.publicKey, level)) ? key : null
-  } catch {
-    // The node did not answer: the passkey always works.
-    return null
-  }
-}
-
-// Offer fast sign only where the passkey signs alone: it adds the key itself.
-async function canOfferFastSign(passkey, signer) {
-  if (!signer || signer.permission !== chain.permission) return false
-
-  try {
-    const auth = await permissionAuthority(chain, signer.actor, signer.permission)
-    return Boolean(auth && signsAlone(auth, passkey.publicKey))
-  } catch {
-    return false
-  }
+  return { session, choosable }
 }
 
 const signsAlone = (auth, key) => auth.keys.some((entry) => entry.key === key && entry.weight >= auth.threshold)
+
+const readAuthority = ({ actor, permission }) => permissionAuthority(chain, actor, permission).catch(() => null)
+
+const sameLevel = (a, b) => Boolean(a && b) && a.actor === b.actor && a.permission === b.permission
+
+// The confirm screen before the transaction is built: the same blocks, so nothing jumps.
+const confirmSkeleton = (from) => [
+  pageTitle([skeleton(200, 18)], `From ${from}`),
+  section('what happens', [card([flowSkeleton(), flowSkeleton()])]),
+  section('signing as', [
+    el('div', { className: 'signer' }, [
+      avatar(null),
+      el('div', { className: 'tile-body' }, [
+        el('div', { className: 'signer-name' }, [skeleton(110, 14)]),
+        el('div', { className: 'signer-sub' }, [skeleton(130, 10)]),
+      ]),
+    ]),
+  ]),
+]
+
+const flowSkeleton = () =>
+  tile({
+    icon: ICONS.in,
+    title: el('div', { className: 'tile-title' }, [skeleton(120, 13)]),
+    sub: skeleton(70, 10),
+    aside: skeleton(64, 14),
+  })
 
 async function confirmScreen({ request, reply }) {
   const passkey = findPasskey(request.publicKey)
@@ -2129,7 +2220,33 @@ async function confirmScreen({ request, reply }) {
     return
   }
 
-  screen({ body: [pageTitle('Checking the request', `From ${from}`), status('Building the transaction')] })
+  // The account's mode rides along with the answer, so the app's label can't stay stale
+  // and send the next Auto trade through a window again. Read-only, set once known below.
+  let level = null
+  const answer = (result) => reply(level ? { ...result, level } : result)
+
+  const reject = [
+    'Reject',
+    () => {
+      answer({ ok: false, error: 'Rejected by the user', rejected: true })
+      window.close()
+    },
+    'danger',
+  ]
+
+  // One layout from the first frame to the last: the buttons stay put, only the page
+  // above them fills in. Reject works from the start.
+  screen({ body: confirmSkeleton(from), actions: [signButton('Confirm', null, 'Checking the request')], links: [reject] })
+
+  // The signer's authority is read alongside the build, from the request, as in autoSign.
+  // It counts only if the built transaction names the same signer.
+  let asked = null
+  try {
+    asked = userAuthorizations(chain, request.actions)[0] ?? null
+  } catch {
+    // Malformed actions: no prefetch; buildTransaction below refuses them with a reason.
+  }
+  const prefetched = asked ? readAuthority(asked) : null
 
   let built
   try {
@@ -2141,7 +2258,7 @@ async function confirmScreen({ request, reply }) {
         state({ icon: ICONS.alert, tone: 'amber', title: 'Could not build it', text: 'Nothing was signed.' }),
         failure(error),
       ],
-      actions: [button('Try again', () => confirmScreen({ request, reply }), 'primary')],
+      actions: [signButton('Try again', () => confirmScreen({ request, reply }))],
       links: [cancelLink(reply, 'Cancel', { error: String(error?.message ?? error) })],
     })
     return
@@ -2149,24 +2266,14 @@ async function confirmScreen({ request, reply }) {
 
   // Everything below comes from the built transaction, not the request: show what gets signed.
   const summary = summarize(chain, built.actions)
-  const signer = userAuthorizations(chain, built.actions)[0]
+  const signers = userAuthorizations(chain, built.actions)
+  const signer = signers[0]
   const alcorPaysCpu = built.actions.some((action) => isCpuPayerNoop(chain, action))
+  // Errors show right above the button: after a click the eyes are there, not down the page.
   const out = stack([])
 
-  const session = await usableTradeKey(built.actions)
-
-  // Auto sign: sign and close at once, only for Alcor trades without ABI warnings.
-  // On failure fall through to the normal screen.
-  if (session?.auto && !built.warnings.length && isAlcorTrade(chain, built.actions)) {
-    screen({ body: [pageTitle(summary.title, `From ${from}`), status('Auto sign')] })
-    try {
-      reply({ ok: true, ...(await signTransactionWithSession(session, built.transaction, built.chainId, built.actions)) })
-      window.close()
-      return
-    } catch (error) {
-      out.replaceChildren(failure(error))
-    }
-  }
+  const auth = !signer ? null : sameLevel(signer, asked) ? await prefetched : await readAuthority(signer)
+  const { session, choosable } = await signingOptions(passkey, signers, auth)
 
   /**
    * The mode applies from the NEXT signature. The permission change is its own
@@ -2175,10 +2282,14 @@ async function confirmScreen({ request, reply }) {
    */
   const entry = signer && { chain, name: signer.actor, permission: signer.permission, passkey }
   const current = session ? (session.auto ? 'auto' : 'fast') : 'passkey'
-  const choosable = Boolean(session) || (await canOfferFastSign(passkey, signer))
   let choice = current
 
-  const levels = signer
+  // Known only for one signer on the working permission, and with the node's answer:
+  // a guessed "passkey" would switch the app off the iframe for an Auto account.
+  if (signers.length === 1 && signer.permission === chain.permission && auth) level = current
+
+  // The mode belongs to one account: with several signers there is none to pick.
+  const levels = signers.length === 1
     ? [
         modePicker({
           label: 'signing mode',
@@ -2209,11 +2320,6 @@ async function confirmScreen({ request, reply }) {
       ? signTransactionWithSession(session, built.transaction, built.chainId, built.actions)
       : signWithPasskey(next)
 
-  const signedScreen = () => {
-    screen({ body: [pageTitle(summary.title, `From ${from}`), banner('ok', 'Signed — back to the app')] })
-    setTimeout(() => window.close(), 400)
-  }
-
   const afterwards = (title, run, doneText) =>
     attempt({
       title,
@@ -2233,20 +2339,26 @@ async function confirmScreen({ request, reply }) {
   const finish = async () => {
     // The mode is fixed at click time; tabs touched during the prompt don't count.
     const next = choice
-    out.replaceChildren(status(session ? 'Signing' : 'Waiting for your passkey'))
+    out.replaceChildren()
+    setBusy(confirm, session ? 'Signing' : 'Waiting for your passkey')
 
     let signed
     try {
       signed = await sign(next)
     } catch (error) {
       out.replaceChildren(failure(error))
+      setBusy(confirm, null)
       return
     }
 
     // The app pushes: in prod a relay co-signs between signing and push.
-    reply({ ok: true, ...signed })
+    answer({ ok: true, ...signed })
 
-    if (next === current) return signedScreen()
+    if (next === current) {
+      setDone(confirm, 'Signed — back to the app')
+      setTimeout(() => window.close(), 400)
+      return
+    }
 
     if (session && next !== 'passkey') {
       return afterwards(
@@ -2291,6 +2403,8 @@ async function confirmScreen({ request, reply }) {
     )
   }
 
+  const confirm = signButton(session ? 'Confirm' : 'Confirm with passkey', finish)
+
   screen({
     body: [
       pageTitle(summary.title, `From ${from}`),
@@ -2299,35 +2413,39 @@ async function confirmScreen({ request, reply }) {
         : null,
       // Risks right under the amounts, before the buttons.
       ...[...built.warnings, ...summary.risks].map((risk) => banner(risk.kind, risk.text)),
+      // Every signer, not just the first: one passkey signs for all its accounts at once.
       section('signing as', [
-        signer
-          ? signerRow({
-              name: signer.actor,
-              permission: signer.permission,
-              network: chain,
-              level: null,
-            })
-          : banner('warn', 'None of your accounts signs this.'),
+        ...signers.map((level) =>
+          signerRow({ name: level.actor, permission: level.permission, network: chain, level: null })
+        ),
+        signers.length ? null : banner('warn', 'None of your accounts signs this.'),
+        signers.length > 1
+          ? banner('warn', `This signs for ${signers.length} accounts at once. Check whose money moves.`)
+          : null,
         alcorPaysCpu || levels.length ? card([alcorPaysCpu ? feeCovered() : null, ...levels]) : null,
       ]),
       disclosure('What exactly gets signed', [
         ...built.actions.map((action) => rawAction(describe(action))),
         el('div', { className: 'raw-foot', textContent: `Valid until ${clock(built.transaction.expiration.toDate())}` }),
       ]),
-      out,
     ],
-    actions: [button(session ? 'Confirm' : 'Confirm with passkey', finish, 'primary')],
-    links: [
-      [
-        'Reject',
-        () => {
-          reply({ ok: false, error: 'Rejected by the user', rejected: true })
-          window.close()
-        },
-        'danger',
-      ],
-    ],
+    actions: [out, confirm],
+    links: [reject],
   })
+
+  // Auto sign: sign and close at once, only what `autoRefusal` lets through.
+  // Otherwise, or on failure, the screen stays, ready for a manual confirm.
+  if (session?.auto && !autoRefusal(chain, built)) {
+    setBusy(confirm, 'Auto sign')
+    try {
+      answer({ ok: true, ...(await signTransactionWithSession(session, built.transaction, built.chainId, built.actions)) })
+      setDone(confirm, 'Signed — back to the app')
+      window.close()
+    } catch (error) {
+      out.replaceChildren(failure(error))
+      setBusy(confirm, null)
+    }
+  }
 }
 
 // ─────────────────────────────────────────────── settings from the app
@@ -2431,6 +2549,19 @@ function importRequest({ request, reply }) {
  * @param {object} request
  * @param {() => void} accept
  */
+/**
+ * Why Auto sign won't sign this without a window, or null when it may. Only a plain
+ * Alcor trade qualifies: anything the summary flags — no minimum, an unknown memo, a
+ * stranger receiving — or an untrusted ABI needs eyes, whatever the app says.
+ */
+function autoRefusal(on, built) {
+  if (!isAlcorTrade(on, built.actions)) return 'Not an Alcor trade — confirm it in the window'
+  if (built.warnings.length) return built.warnings[0].text
+
+  const [risk] = summarize(on, built.actions).risks
+  return risk ? `${risk.text} Confirm it in the window.` : null
+}
+
 async function autoSign(request, accept) {
   const on = chainById(request.chain)
   assertAllowedFromApp(request.actions)
@@ -2458,10 +2589,10 @@ async function autoSign(request, accept) {
   if (!signer || signer.actor !== asked.actor || signer.permission !== asked.permission) {
     return { ok: false, error: 'The built transaction is signed by someone else' }
   }
-  if (!isAlcorTrade(on, built.actions)) return { ok: false, error: 'Not an Alcor trade — confirm it in the window' }
   if (!onChain) return { ok: false, error: `This browser's key is no longer on ${asked.actor}` }
-  // An untrusted ABI goes only through the screen.
-  if (built.warnings.length) return { ok: false, error: built.warnings[0].text }
+
+  const refusal = autoRefusal(on, built)
+  if (refusal) return { ok: false, error: refusal }
 
   return { ok: true, ...(await signTransactionWithSession(key, built.transaction, built.chainId, built.actions)) }
 }
@@ -2509,14 +2640,22 @@ if (isEmbedded()) {
 } else if (!pending) {
   await homeScreen()
 } else {
-  screen({
-    body: [
-      state({ icon: ICONS.plug, title: 'Waiting for the app', text: 'The window is open — fetching the request.' }),
-      status('Connecting'),
-    ],
-  })
+  // The request usually lands within milliseconds; a waiting screen would only flash
+  // before the real one. It shows only when the app is slow.
+  screen({ body: [] })
+  const slow = setTimeout(
+    () =>
+      screen({
+        body: [
+          state({ icon: ICONS.plug, title: 'Waiting for the app', text: 'The window is open — fetching the request.' }),
+          status('Connecting'),
+        ],
+      }),
+    700
+  )
 
   const incoming = await pending
+  clearTimeout(slow)
 
   // The app gets one reply; later ones (home after replying, pagehide after Done) are dropped.
   if (!incoming.timedOut) {

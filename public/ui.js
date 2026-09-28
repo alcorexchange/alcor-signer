@@ -467,6 +467,38 @@ export function button(text, onclick, variant = '') {
   })
 }
 
+/**
+ * The main button of a signing screen. It shows its own progress: after the click the
+ * eyes are on it, not on the page above. Starts busy when `busy` is given.
+ *
+ * No keyboard shortcut and no autofocus, on purpose: a key typed for the app as this
+ * window took focus would sign what the user never saw.
+ */
+export function signButton(text, onclick, busy = null) {
+  const node = el('button', { type: 'button', className: 'primary sign', onclick })
+  node.dataset.label = text
+  setBusy(node, busy)
+  return node
+}
+
+/** `text` locks the button with a spinner; null makes it ready again. */
+export function setBusy(node, text) {
+  node.disabled = text !== null
+  node.classList.toggle('busy', text !== null)
+  node.replaceChildren(
+    ...(text === null
+      ? [el('span', { textContent: node.dataset.label })]
+      : [el('span', { className: 'spinner' }), el('span', { textContent: text })])
+  )
+}
+
+export function setDone(node, text) {
+  node.disabled = true
+  node.classList.remove('busy')
+  node.classList.add('done')
+  node.replaceChildren(icon(ICONS.check, 14), el('span', { textContent: text }))
+}
+
 const backButton = (onclick) =>
   el('button', { className: 'back', type: 'button', ariaLabel: 'Back', title: 'Back (Esc)', onclick }, [icon(ICONS.left, 16)])
 
@@ -592,10 +624,11 @@ export function secretInput({ placeholder, multiline = false, onCleared = () => 
 
 /**
  * Confirmation over the screen, a native `<dialog>`: Esc or a click outside means no.
+ * `details` goes under the text: a list of what the user agrees to.
  *
  * @returns {Promise<boolean>} true when confirmed
  */
-export function confirmDialog({ icon: paths, tone = '', title, text, confirm, cancel = 'Not now' }) {
+export function confirmDialog({ icon: paths, tone = '', title, text, details = null, confirm, cancel = 'Not now' }) {
   return new Promise((resolve) => {
     const dialog = el('dialog', { className: 'confirm' })
     const answer = (value) => {
@@ -608,6 +641,7 @@ export function confirmDialog({ icon: paths, tone = '', title, text, confirm, ca
         paths ? el('span', { className: `confirm-icon ${tone}`.trim() }, [icon(paths, 18)]) : null,
         el('h2', { className: 'confirm-title', textContent: title }),
         el('p', { className: 'confirm-text', textContent: text }),
+        details,
         el('div', { className: 'confirm-actions' }, [
           el('button', { type: 'button', className: 'primary', textContent: confirm, onclick: () => answer(true) }),
           el('button', { type: 'button', className: 'quiet', textContent: cancel, onclick: () => answer(false) }),

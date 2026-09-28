@@ -51,31 +51,30 @@ async function call(chain, run) {
  * @returns {Promise<{ transaction, chainId: string, actions: object[], warnings: { kind: 'warn', text: string }[] }>}
  */
 export async function buildTransaction(chain, actions) {
-  // One node for both: TAPOS from get_info must match the chain the ABIs came from.
+  // One node for both, in parallel: TAPOS from get_info must match the chain the ABIs came from.
+  let used
   const { info, abis } = await call(chain, async (client) => {
-    const info = await client.v1.chain.get_info()
+    used = client
     const contracts = [...new Set(actions.map((a) => a.account))]
-
-    return {
-      info,
-      abis: await Promise.all(
+    const [info, abis] = await Promise.all([
+      client.v1.chain.get_info(),
+      Promise.all(
         contracts.map(async (contract) => {
-          const raw = Bytes.from((await client.v1.chain.get_raw_abi(contract)).abi.array)
+          const { raw, hash } = await rawAbi(client, contract)
           // No ABI on chain: the contract was removed. Without it nobody can encode
           // the action — decoding would fail with a bare "Read past end of buffer".
           if (!raw.length) {
             throw new Error(`${contract} has no contract on ${chain.name} any more — it was removed, so nothing can be sent to it.`)
           }
-          return {
-            contract: Name.from(contract),
-            abi: Serializer.decode({ data: raw, type: ABI }),
-            // Hash the bytes we build with, not the node's `abi_hash`.
-            hash: String(Checksum256.hash(raw)),
-          }
+          return { contract: Name.from(contract), abi: Serializer.decode({ data: raw, type: ABI }), hash }
         })
       ),
-    }
+    ])
+
+    return { info, abis }
   })
+
+  await Promise.all(abis.filter((entry) => !isPinned(chain, entry)).map((entry) => confirmAbi(chain, used, entry)))
 
   const transaction = Transaction.from(
     {
@@ -99,8 +98,36 @@ export async function buildTransaction(chain, actions) {
   return { transaction, chainId: chain.chainId, actions: decoded, warnings: abiWarnings(chain, abis, decoded) }
 }
 
-// An untrusted ABI is a warning, not a refusal: a node lying and a contract updated
-// without re-pinning look the same. The user reads the transaction; Auto sign refuses.
+// Hash the bytes we build with, not the node's `abi_hash`.
+async function rawAbi(client, contract) {
+  const raw = Bytes.from((await client.v1.chain.get_raw_abi(String(contract))).abi.array)
+  return { raw, hash: String(Checksum256.hash(raw)) }
+}
+
+const isPinned = (chain, { contract, hash }) => PINNED_ABIS[chain.id]?.[String(contract)] === hash
+
+/**
+ * An ABI not matching a pin is confirmed by a second node: the ABI decides which bytes
+ * say "recipient", and one lying node could swap the fields. The first node that
+ * returns the same hash settles it; none, and nothing is signed.
+ */
+async function confirmAbi(chain, used, { contract, hash }) {
+  const others = chain.rpcs.map(clientFor).filter((client) => client !== used)
+
+  try {
+    await Promise.any(
+      others.map(async (client) => {
+        if ((await rawAbi(client, contract)).hash !== hash) throw new Error('another ABI')
+      })
+    )
+  } catch {
+    throw new Error(`No second ${chain.name} node confirmed the ${contract} contract. Nothing was signed — try again later.`)
+  }
+}
+
+// An ABI off its pin is a warning, not a refusal: a second node confirmed it
+// (`confirmAbi`), so it is the contract updated without re-pinning, not one node lying.
+// The user reads the transaction; Auto sign and vault-started changes refuse.
 // Unpinned tokens are checked by shape: a token `transfer` is always from, to, quantity, memo.
 function abiWarnings(chain, abis, actions) {
   const pinned = PINNED_ABIS[chain.id] ?? {}
@@ -143,9 +170,22 @@ function isStandardTransfer(abi) {
 }
 
 // Actions decoded back from the built transaction: the screen shows what was serialized, not the app's JSON.
+//
+// The decoded data must encode back to exactly the signed bytes. Data sent as raw
+// bytes skips ABI encoding, and decoding stops where the ABI ends: a tail after it
+// would be signed and reach the contract without ever being shown.
 function decodeActions(transaction, abis) {
   return transaction.actions.map((action) => {
     const { abi } = abis.find((entry) => entry.contract.equals(action.account))
+    const call = `${action.account}::${action.name}`
+    const type = abi.getActionType(action.name)
+    if (!type) throw new Error(`${call} is not in the contract's ABI. Nothing was signed.`)
+
+    const value = Serializer.decode({ data: action.data, type, abi })
+    const again = Serializer.encode({ object: value, type, abi })
+    if (compareBytes(again.array, action.data.array) !== 0) {
+      throw new Error(`${call} carries data that can't be shown in full. Nothing was signed.`)
+    }
 
     return {
       account: String(action.account),
@@ -154,7 +194,7 @@ function decodeActions(transaction, abis) {
         actor: String(level.actor),
         permission: String(level.permission),
       })),
-      data: Serializer.objectify(action.decodeData(abi)),
+      data: Serializer.objectify(value),
     }
   })
 }
@@ -217,10 +257,38 @@ export async function accountsForKey(chain, publicKey) {
   }))
 }
 
-// The whole authority as it is on chain: `updateauth` replaces it entirely, so we must
-// see foreign keys and accounts before rewriting it. null when there is no such permission.
+// The whole authority as one node reports it. null when there is no such permission.
+// For showing only: rewriting it takes `agreedAuthority`.
 export async function permissionAuthority(chain, account, permission) {
-  const info = await call(chain, (client) => client.v1.chain.get_account(account))
+  return call(chain, (client) => authorityFrom(client, account, permission))
+}
+
+/**
+ * The authority as every node of the network reports it, for rewriting with `updateauth`.
+ * That rewrite keeps whatever it read, so one lying node could put its own key or account
+ * into the permission, signed by the user's passkey. At least two nodes must answer, and
+ * all that answer must agree.
+ */
+export async function agreedAuthority(chain, account, permission) {
+  const results = await Promise.allSettled(chain.rpcs.map((url) => authorityFrom(clientFor(url), account, permission)))
+  const answers = results.filter((result) => result.status === 'fulfilled').map((result) => result.value)
+
+  if (answers.length < 2) {
+    throw new Error(`Too few ${chain.name} nodes answered to check who controls ${account}. Nothing was signed — try again later.`)
+  }
+  if (new Set(answers.map((answer) => JSON.stringify(answer))).size > 1) {
+    throw new Error(
+      `${chain.name} nodes disagree about who controls ${account}@${permission}. Nothing was signed — ` +
+        'if you just changed it, wait a few seconds and try again.'
+    )
+  }
+
+  return answers[0]
+}
+
+// `updateauth` replaces the authority entirely, so foreign keys and accounts must be seen before rewriting it.
+async function authorityFrom(client, account, permission) {
+  const info = await client.v1.chain.get_account(account)
   const found = (info.permissions ?? []).find((entry) => String(entry.perm_name) === permission)
   if (!found) return null
 

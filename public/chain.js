@@ -37,8 +37,9 @@ export const CHAINS = {
     logo: './chains/wax.png',
     permission: 'active',
     systemToken: { symbol: 'WAX', contract: 'eosio.token' },
-    // `other`: OTC and liquid staking — trades with them are Alcor trades too (`isAlcorTrade`).
-    alcor: { swap: 'swap.alcor', spot: 'alcordexmain', other: ['alcorotcswap', 'liquid.alcor'] },
+    // `liquid`: liquid staking, which Auto sign may use (`isAlcorTrade`). OTC is not here on
+    // purpose: its price is whatever the offer says, and the app picks the offer.
+    alcor: { swap: 'swap.alcor', spot: 'alcordexmain', liquid: 'liquid.alcor' },
     // Alcor pays CPU: the app puts the payer's `noop` first and adds its signature after ours.
     cpuPayer: { contract: 'liquid.alcor', action: 'noop', actor: 'liquid.alcor', permission: 'bw' },
     // NEVER change it — see Telos.
@@ -67,7 +68,6 @@ export const CHAINS = {
   },
 }
 
-export const alcorContracts = (chain) => new Set([chain.alcor.swap, chain.alcor.spot, ...(chain.alcor.other ?? [])])
 
 // The "Alcor pays CPU" action: exactly the registry's `noop`, no data, signed by the
 // payer alone. Not a signer and not a summary row; anything different is an unknown action.

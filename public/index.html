@@ -6,6 +6,26 @@
     <meta name="referrer" content="no-referrer" />
     <link rel="icon" href="./signer-mark.svg" />
     <link rel="stylesheet" href="./styles.css" />
+    <!-- Every module at once: files revalidate on each load (no-cache), and without this
+         the import chain would fetch them level by level. Keep in sync with the imports. -->
+    <link rel="modulepreload" href="./vendor/wharfkit.js" />
+    <link rel="modulepreload" href="./app.js" />
+    <link rel="modulepreload" href="./ui.js" />
+    <link rel="modulepreload" href="./sign.js" />
+    <link rel="modulepreload" href="./summary.js" />
+    <link rel="modulepreload" href="./session.js" />
+    <link rel="modulepreload" href="./chain.js" />
+    <link rel="modulepreload" href="./passkey.js" />
+    <link rel="modulepreload" href="./webauthn.js" />
+    <link rel="modulepreload" href="./root.js" />
+    <link rel="modulepreload" href="./discover.js" />
+    <link rel="modulepreload" href="./protocol.js" />
+    <link rel="modulepreload" href="./errors.js" />
+    <link rel="modulepreload" href="./format.js" />
+    <link rel="modulepreload" href="./cache.js" />
+    <link rel="modulepreload" href="./keys.js" />
+    <link rel="modulepreload" href="./k1.js" />
+    <link rel="modulepreload" href="./abis.js" />
     <title>Alcor Signer</title>
   </head>
   <body>
