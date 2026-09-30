@@ -73,6 +73,12 @@ export function ownerKey(root, chain, index) {
   return { index, path: ownerPath(chain, index), privateKey, publicKey: k1PublicKey(privateKey) }
 }
 
+// For handing a key out: the private half is wiped, the public one returned.
+export function publicOnly(key) {
+  key.privateKey.data.array.fill(0)
+  return key.publicKey
+}
+
 /**
  * Every account of the root: slots in order on each network, until GAP empty in a row.
  * A network that didn't answer is reported, not skipped: "not found" and "not asked"

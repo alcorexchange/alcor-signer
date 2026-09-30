@@ -74,7 +74,7 @@ import {
   setAutoSign,
 } from './session.js'
 import { k1PublicKey } from './k1.js'
-import { forgetRoot, nextFreeIndex, ownerKey, rootAccounts, rootFromPasskey, rootFromWords } from './root.js'
+import { forgetRoot, nextFreeIndex, ownerKey, publicOnly, rootAccounts, rootFromPasskey, rootFromWords } from './root.js'
 import { discoverPasskey } from './discover.js'
 import { PrivateKey } from './vendor/wharfkit.js'
 import {
@@ -185,6 +185,12 @@ const cancelLink = (reply, text = 'Cancel', result = CANCELLED) => [
     window.close()
   },
 ]
+
+function replyAndClose(reply, out, result) {
+  reply(result)
+  out.replaceChildren(banner('ok', 'Done — back to the app'))
+  setTimeout(() => window.close(), 150)
+}
 
 const appName = (origin) => {
   try {
@@ -1813,21 +1819,30 @@ function loginScreen(incoming) {
   const out = stack([])
   const cancel = cancelLink(reply)
   const again = () => loginScreen(incoming)
+  // The app opts in to open the account itself; without it "no account" stays a failure.
+  const create = request.create === true
 
-  const added = (passkey) =>
+  const noAccount = (passkey, owner) =>
+    create
+      ? handKeysScreen({ passkey, owner, from, reply, back: again })
+      : noAccountScreen(passkey, reply, again)
+
+  const added = (passkey, owner) =>
     attempt({
       title: `Sign in to ${from}`,
       sub: chain.name,
       busy: 'Looking up the account',
       back: again,
       cancel,
-      run: async () => ((await accountsOn(chain, [passkey])).length ? again() : noAccountScreen(passkey, reply, again)),
+      run: async () => ((await accountsOn(chain, [passkey])).length ? again() : noAccount(passkey, owner)),
     })
 
+  // A new passkey is a new root: its first owner slot is free on every network.
   const createNew = () =>
     createKeyFlow(out, (passkey, root) => {
+      const owner = create ? publicOnly(ownerKey(root, chain, 0)) : null
       forgetRoot(root)
-      added(passkey)
+      added(passkey, owner)
     })
   const findOther = () => findKeyFlow(out, added)
 
@@ -1867,9 +1882,8 @@ function loginScreen(incoming) {
   // The level is best-effort.
   const signIn = async (entry) => {
     const level = await signingLevel(entry).catch(() => null)
-    reply({ ok: true, publicKey: entry.passkey.publicKey, credentialId: entry.passkey.credentialId, account: entry.name, level })
-    out.replaceChildren(banner('ok', 'Done — back to the app'))
-    setTimeout(() => window.close(), 150)
+    const { publicKey, credentialId } = entry.passkey
+    replyAndClose(reply, out, { ok: true, publicKey, credentialId, account: entry.name, level })
   }
 
   const draw = (label, rows, actions = []) =>
@@ -1920,7 +1934,7 @@ function loginScreen(incoming) {
               face: avatar(null),
               title: 'No account yet',
               sub: `Key ${shortKey(passkey.publicKey)}`,
-              onclick: () => noAccountScreen(passkey, reply, again),
+              onclick: () => noAccount(passkey),
             })
           )
         )
@@ -1973,6 +1987,57 @@ function noAccountScreen(passkey, reply, again) {
         },
       ],
     ],
+  })
+}
+
+// `login` with `create`: the vault signs nothing, the app opens the account itself with
+// these public keys. Owner comes from the root, so the 24 words bring the account back.
+function handKeysScreen({ passkey, owner, from, reply, back }) {
+  const out = stack([])
+  const redraw = () => handKeysScreen({ passkey, owner, from, reply, back })
+
+  // A passkey from before may already own accounts through its root: the next free slot.
+  const deriveOwner = async () => {
+    out.replaceChildren(status('Confirm with your passkey — picking the owner key'))
+    const root = await rootFromPasskey(passkey)
+    try {
+      return publicOnly(await nextFreeIndex(root, chain))
+    } finally {
+      forgetRoot(root)
+    }
+  }
+
+  const go = button(
+    'Continue',
+    async () => {
+      go.disabled = true
+      try {
+        const { publicKey, credentialId } = passkey
+        replyAndClose(reply, out, { ok: true, publicKey, credentialId, account: null, owner: owner ?? (await deriveOwner()), level: null })
+      } catch (error) {
+        out.replaceChildren(failure(error))
+        go.disabled = false
+      }
+    },
+    'primary'
+  )
+
+  screen({
+    back,
+    body: [
+      state({
+        icon: ICONS.user,
+        title: 'No account yet',
+        text: `${from} opens your ${chain.name} account with these keys. Nothing is signed here.`,
+      }),
+      card([
+        field('active', mono(passkey.publicKey)),
+        field('owner', owner ? mono(owner) : 'From your 24 words — one more passkey confirmation'),
+      ]),
+      out,
+    ],
+    actions: [go],
+    links: [['Import a wallet', () => importScreen(passkey, { back: redraw, done: back })], cancelLink(reply)],
   })
 }
 
