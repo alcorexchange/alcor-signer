@@ -1578,7 +1578,7 @@ function importScreen(passkey, flow = null) {
         : section('network', [segmented(Object.values(CHAINS).map((entry) => [entry, entry.name, () => chainLogo(entry)]), network, (entry) => (network = entry))]),
       // Why a private key at all: without this, pasting one reads like the scam it usually is.
       card([
-        tile({ icon: ICONS.shield, tone: 'mint', title: 'Never leaves this page', sub: 'Signed right here in your browser. Not sent to Alcor or anyone else' }),
+        tile({ icon: ICONS.shield, tone: 'mint', title: 'Never leaves this page', sub: 'Signed in your browser, never sent anywhere. The page code is readable — anyone can check it' }),
         tile({ icon: ICONS.plus, title: 'Only adds your passkey', sub: 'Your current keys keep working. Nothing is removed unless you turn it on next step' }),
         tile({ icon: ICONS.eye, title: 'Used once, then forgotten', sub: 'One transaction, then erased. Not saved here or anywhere' }),
       ]),
