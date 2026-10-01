@@ -191,7 +191,44 @@ const assetRow = (dir, label, text, sub) => {
 
 const pool = (data) => `pool #${data.poolId}`
 
+// sqrtPriceX64 is √(B per A) in raw units, Q64.64. Shown, never summed, so a float will do.
+function startPrice({ tokenA, tokenB, sqrtPriceX64 }) {
+  const a = parseAmount(tokenA?.quantity, tokenA?.contract)
+  const b = parseAmount(tokenB?.quantity, tokenB?.contract)
+  const sqrt = String(sqrtPriceX64 ?? '')
+  if (!a || !b || !/^\d+$/.test(sqrt)) return null
+
+  const price = (Number(sqrt) / 2 ** 64) ** 2 * 10 ** (a.precision - b.precision)
+  return { a, b, price: price.toLocaleString('en-US', { maximumSignificantDigits: 6 }) }
+}
+
 const POOL_ACTIONS = {
+  // Tokens are told apart by contract: a fake USDC has the same symbol.
+  createpool: (data) => {
+    const start = startPrice(data)
+    if (!start) {
+      return {
+        title: 'Create pool',
+        rows: [],
+        risks: [{ kind: 'warn', text: 'Alcor cannot read the pair or the start price of this pool.' }],
+      }
+    }
+
+    const { a, b, price } = start
+    return {
+      title: `Create pool ${a.symbol}/${b.symbol}`,
+      rows: [
+        {
+          dir: 'in',
+          label: 'New pool',
+          amount: `${a.symbol} / ${b.symbol}`,
+          sub: `${a.contract} / ${b.contract} · ${Number(data.fee) / 10000}% fee`,
+        },
+        { dir: 'in', label: 'Start price', amount: `${price} ${b.symbol}`, sub: `per 1 ${a.symbol}` },
+      ],
+      risks: [],
+    }
+  },
   addliquid: (data) => ({
     title: 'Add liquidity',
     rows: [
