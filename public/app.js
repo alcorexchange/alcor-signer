@@ -195,6 +195,15 @@ const cancelLink = (reply, text = 'Cancel', result = CANCELLED) => [
   },
 ]
 
+// A request refused before anything is done: said on screen and to the app, Close only.
+function refuseRequest(reply, { title = 'Request rejected', text, error = text, more = [] }) {
+  screen({
+    body: [state({ icon: ICONS.ban, tone: 'red', title, text }), ...more],
+    actions: [button('Close', () => window.close())],
+  })
+  reply({ ok: false, error })
+}
+
 function replyAndClose(reply, out, result) {
   reply(result)
   out.replaceChildren(banner('ok', 'Done — back to the app'))
@@ -2061,21 +2070,13 @@ function finishScreen({ request, reply }) {
   const passkey = findPasskey(String(request.publicKey ?? ''))
   const cancel = cancelLink(reply)
 
-  const reject = (text) => {
-    screen({
-      body: [state({ icon: ICONS.ban, tone: 'red', title: 'Request rejected', text })],
-      actions: [button('Close', () => window.close())],
-    })
-    reply({ ok: false, error: text })
-  }
-
   // Name and key come from the app and reach the screen and the transaction.
   if (!ANTELOPE_NAME.test(name) || !owner.startsWith('PUB_K1_')) {
-    reject('The app named an account or key that cannot exist.')
+    refuseRequest(reply, { text: 'The app named an account or key that cannot exist.' })
     return
   }
   if (!passkey) {
-    reject('The passkey for this account is not on this device.')
+    refuseRequest(reply, { text: 'The passkey for this account is not on this device.' })
     return
   }
 
@@ -2151,11 +2152,7 @@ function enrollScreen({ request, reply }) {
 
   // Name and permission come from the app and reach the screen and the key salt.
   if (!ANTELOPE_NAME.test(String(name)) || !ANTELOPE_NAME.test(String(permission))) {
-    screen({
-      body: [state({ icon: ICONS.ban, tone: 'red', title: 'Request rejected', text: 'The app named an account that cannot exist.' })],
-      actions: [button('Close', () => window.close())],
-    })
-    reply({ ok: false, error: 'Invalid account or permission' })
+    refuseRequest(reply, { text: 'The app named an account that cannot exist.', error: 'Invalid account or permission' })
     return
   }
 
@@ -2361,11 +2358,7 @@ async function confirmScreen({ request, reply }) {
   const from = appName(request.appOrigin)
 
   if (!passkey) {
-    screen({
-      body: [state({ icon: ICONS.ban, tone: 'red', title: 'Unknown key', text: 'This key was not created here.' })],
-      actions: [button('Close', () => window.close())],
-    })
-    reply({ ok: false, error: 'Unknown key' })
+    refuseRequest(reply, { title: 'Unknown key', text: 'This key was not created here.', error: 'Unknown key' })
     return
   }
 
@@ -2373,15 +2366,10 @@ async function confirmScreen({ request, reply }) {
   try {
     assertAllowedFromApp(request.actions)
   } catch (error) {
-    screen({
-      body: [
-        state({ icon: ICONS.ban, tone: 'red', title: 'Request rejected', text: error.message }),
-        banner('danger', 'If you did not ask for this, the app is compromised.'),
-        note(`The request came from ${from}.`),
-      ],
-      actions: [button('Close', () => window.close())],
+    refuseRequest(reply, {
+      text: error.message,
+      more: [banner('danger', 'If you did not ask for this, the app is compromised.'), note(`The request came from ${from}.`)],
     })
-    reply({ ok: false, error: error.message })
     return
   }
 
