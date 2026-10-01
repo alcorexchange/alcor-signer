@@ -275,17 +275,20 @@ function welcomeScreen({ then = (passkey, root) => newAccountScreen(passkey, roo
 }
 
 // Two prompts: create the key, then derive the root. Without PRF nothing is cached (ADR-0010 §2).
-async function createKeyFlow(out, then) {
+// `words: false` — an app opening an account with its first deposit asks for the words
+// once the account holds something (`backup`); the root is the same whenever it is derived.
+async function createKeyFlow(out, then, { words = true } = {}) {
   out.replaceChildren(status('Creating the key — confirm with your passkey'))
 
   try {
     const created = await makePasskey()
-    out.replaceChildren(status('One more confirmation — deriving your recovery phrase'))
+    out.replaceChildren(status(words ? 'One more confirmation — deriving your recovery phrase' : 'One more confirmation — deriving your keys'))
 
     const root = await rootFromPasskey(created)
     const passkey = rememberPasskey({ ...created, prf: true })
 
-    wordsScreen(root, { next: () => then(passkey, root) })
+    if (words) wordsScreen(root, { next: () => then(passkey, root) })
+    else then(passkey, root)
   } catch (error) {
     out.replaceChildren(failure(error))
   }
@@ -1145,37 +1148,52 @@ function linkGuideScreen(passkey) {
 }
 
 // The words restore an account only if its owner has a key from them; add it where the passkey signs owner.
-function phraseScreen(passkey, { back = homeScreen } = {}) {
+// `confirm` — the app asked for a backup: Done waits for "I saved these words".
+function phraseScreen(passkey, { back = homeScreen, done: finish = back, confirm = false, links = [] } = {}) {
   const out = stack([])
   const step = stack([])
 
-  const draw = (actions, back) =>
-    screen({ body: [pageTitle('Recovery phrase', 'The way back in if you lose this passkey'), step, out], actions, back })
+  // The root on screen, if any: every way out zeroes it, not only Done.
+  let shown = null
+  const forgetShown = () => {
+    if (shown) forgetRoot(shown)
+    shown = null
+  }
+  const exits = links.filter(Boolean).map(([label, go]) => [label, () => (forgetShown(), go())])
 
-  const done = (root) =>
-    button(
+  const draw = (actions, back) =>
+    screen({ body: [pageTitle('Recovery phrase', 'The way back in if you lose this passkey'), step, out], actions, links: exits, back })
+
+  const done = () => {
+    const go = button(
       'Done',
       () => {
-        forgetRoot(root)
-        back()
+        forgetShown()
+        finish(out)
       },
       'primary'
     )
+    go.disabled = confirm
+    return go
+  }
 
   async function reveal() {
     out.replaceChildren(status('Waiting for your passkey'))
 
     try {
       const root = await rootFromPasskey(passkey)
+      shown = root
       out.replaceChildren()
 
       const coverage = stack([status('Checking which accounts these words bring back')])
+      const go = done()
       step.replaceChildren(
         banner('danger', 'Anyone with these words owns your accounts. Never type them into a website.'),
         wordGrid(root.words),
+        ...(confirm ? [checkbox('I saved these words somewhere safe', (on) => (go.disabled = !on))] : []),
         coverage
       )
-      draw([done(root)])
+      draw([go])
 
       coverage.replaceChildren(await coverageSection(passkey, root, out))
     } catch (error) {
@@ -1858,12 +1876,29 @@ function loginScreen(incoming) {
     })
 
   // A new passkey is a new root: its first owner slot is free on every network.
+  // With `create` it has no account anywhere, so its keys go straight back — no lookup,
+  // no words: the app asks for those once the account holds funds (`backup`).
   const createNew = () =>
-    createKeyFlow(out, (passkey, root) => {
-      const owner = create ? publicOnly(ownerKey(root, chain, 0)) : null
-      forgetRoot(root)
-      added(passkey, owner)
-    })
+    create
+      ? createKeyFlow(
+          out,
+          (passkey, root) => {
+            try {
+              const owner = publicOnly(ownerKey(root, chain, 0))
+              const { publicKey, credentialId } = passkey
+              replyAndClose(reply, out, { ok: true, publicKey, credentialId, account: null, owner, level: null })
+            } catch (error) {
+              out.replaceChildren(failure(error))
+            } finally {
+              forgetRoot(root)
+            }
+          },
+          { words: false }
+        )
+      : createKeyFlow(out, (passkey, root) => {
+          forgetRoot(root)
+          added(passkey, null)
+        })
   const findOther = () => findKeyFlow(out, added)
 
   // No key cached here — usually a new device the passkey synced to, so lead with
@@ -2058,6 +2093,25 @@ function handKeysScreen({ passkey, owner, from, reply, back }) {
     ],
     actions: [go],
     links: [['Import a wallet', () => importScreen(passkey, { back: redraw, done: back })], cancelLink(reply)],
+  })
+}
+
+// `backup`: the app's account holds funds now, and its words were never shown — an
+// account opened by its first deposit skips them at creation. Nothing is signed; the
+// reply says only that the person ticked "saved", never the words.
+function backupScreen({ request, reply }) {
+  const passkey = findPasskey(String(request.publicKey ?? ''))
+  if (!passkey) {
+    refuseRequest(reply, { text: 'The passkey for this account is not on this device.' })
+    return
+  }
+
+  const cancel = cancelLink(reply)
+  phraseScreen(passkey, {
+    confirm: true,
+    links: [cancel],
+    back: cancel[1],
+    done: (out) => replyAndClose(reply, out, { ok: true }),
   })
 }
 
@@ -2842,6 +2896,7 @@ if (isEmbedded()) {
 
     if (incoming.request.kind === 'login') loginScreen(incoming)
     else if (incoming.request.kind === 'finish') finishScreen(incoming)
+    else if (incoming.request.kind === 'backup') backupScreen(incoming)
     else if (incoming.request.kind === 'enroll') enrollScreen(incoming)
     else if (incoming.request.kind === 'settings') settingsScreen(incoming)
     else if (incoming.request.kind === 'import') importRequest(incoming)
