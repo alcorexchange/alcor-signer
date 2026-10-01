@@ -1,7 +1,7 @@
 // Alcor Signer: an isolated signing origin. Modes:
 //
 //   opened directly  → accounts, signing levels, import, keys
-//   opened by app    → login, enroll, sign, settings, import
+//   opened by app    → login, finish, enroll, sign, settings, import
 //   iframe in app    → Auto sign: sign without a screen, or refuse
 //
 // Nothing from the app is imported here, and cannot be: it is another origin.
@@ -74,7 +74,16 @@ import {
   setAutoSign,
 } from './session.js'
 import { k1PublicKey } from './k1.js'
-import { forgetRoot, nextFreeIndex, ownerKey, publicOnly, rootAccounts, rootFromPasskey, rootFromWords } from './root.js'
+import {
+  forgetRoot,
+  nextFreeIndex,
+  ownerKey,
+  ownerKeyOf,
+  publicOnly,
+  rootAccounts,
+  rootFromPasskey,
+  rootFromWords,
+} from './root.js'
 import { discoverPasskey } from './discover.js'
 import { PrivateKey } from './vendor/wharfkit.js'
 import {
@@ -2041,6 +2050,97 @@ function handKeysScreen({ passkey, owner, from, reply, back }) {
   })
 }
 
+// `finish`: an account the app opened with the owner key alone — the account factory's
+// digits-only memo, for exchanges, carries one K1 for both owner and active. The owner
+// key, derived from the root again, puts the passkey on active in its place; after that
+// the account is an ordinary login.
+function finishScreen({ request, reply }) {
+  const from = appName(request.appOrigin)
+  const name = String(request.account ?? '')
+  const owner = String(request.owner ?? '')
+  const passkey = findPasskey(String(request.publicKey ?? ''))
+  const cancel = cancelLink(reply)
+
+  const reject = (text) => {
+    screen({
+      body: [state({ icon: ICONS.ban, tone: 'red', title: 'Request rejected', text })],
+      actions: [button('Close', () => window.close())],
+    })
+    reply({ ok: false, error: text })
+  }
+
+  // Name and key come from the app and reach the screen and the transaction.
+  if (!ANTELOPE_NAME.test(name) || !owner.startsWith('PUB_K1_')) {
+    reject('The app named an account or key that cannot exist.')
+    return
+  }
+  if (!passkey) {
+    reject('The passkey for this account is not on this device.')
+    return
+  }
+
+  const putPasskeyOnActive = async (work, active) => {
+    work.replaceChildren(status('Confirm with your passkey — it unlocks the owner key'))
+    const root = await rootFromPasskey(passkey)
+    let key = null
+
+    try {
+      key = ownerKeyOf(root, chain, owner)
+      if (!key) throw new Error(`${shortKey(owner)} is not from this passkey's 24 words`)
+
+      work.replaceChildren(status('Putting your passkey on active'))
+      const action = editKeysAction(name, 'active', active, { add: [passkey.publicKey], remove: [owner], by: 'owner' })
+      await submitWith(chain, withKey(key.privateKey), [action], { known: [passkey.publicKey] })
+    } finally {
+      key?.privateKey.data.array.fill(0)
+      forgetRoot(root)
+    }
+  }
+
+  const finish = () =>
+    attempt({
+      title: ['Finish ', accent(name)],
+      sub: chain.name,
+      busy: 'Checking the account',
+      back: () => finishScreen({ request, reply }),
+      cancel,
+      run: async (work) => {
+        const [ownerAuth, active] = await Promise.all([
+          agreedAuthority(chain, name, 'owner'),
+          agreedAuthority(chain, name, 'active'),
+        ])
+        if (!ownerAuth?.keys.some((entry) => entry.key === owner)) {
+          throw new Error(`${name} on ${chain.name} is not owned by ${shortKey(owner)}`)
+        }
+        if (!active) throw new Error(`${name} has no active permission on ${chain.name}`)
+
+        // Already there when an earlier window finished it and closed before replying.
+        if (!active.keys.some((entry) => entry.key === passkey.publicKey)) await putPasskeyOnActive(work, active)
+
+        // A new account has no browser key yet: every signature is a passkey one.
+        const { publicKey, credentialId } = passkey
+        replyAndClose(reply, work, { ok: true, publicKey, credentialId, account: name, level: 'passkey' })
+      },
+    })
+
+  screen({
+    body: [
+      state({
+        icon: ICONS.user,
+        title: `Finish ${name}`,
+        text: `${name} was opened with your owner key alone. One passkey confirmation puts your passkey on active, the owner key stays on owner, and ${from} signs you in.`,
+      }),
+      card([
+        field('account', mono(name)),
+        field('adds to active', mono(passkey.publicKey)),
+        field('removes from active', mono(owner)),
+      ]),
+    ],
+    actions: [button('Finish', finish, 'primary')],
+    links: [cancel],
+  })
+}
+
 // The vault signs nothing here: it hands public keys (passkey, optional fast key) to the
 // app's wallet, which adds them in one transaction (ADR-0010 §6).
 function enrollScreen({ request, reply }) {
@@ -2751,6 +2851,7 @@ if (isEmbedded()) {
     }
 
     if (incoming.request.kind === 'login') loginScreen(incoming)
+    else if (incoming.request.kind === 'finish') finishScreen(incoming)
     else if (incoming.request.kind === 'enroll') enrollScreen(incoming)
     else if (incoming.request.kind === 'settings') settingsScreen(incoming)
     else if (incoming.request.kind === 'import') importRequest(incoming)

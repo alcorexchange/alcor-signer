@@ -307,6 +307,7 @@ yarn vendor    # перепроверка: собрать заново и све
 | из app, `kind: 'settings'` | `settingsScreen` | аккаунт из меню app: режим подписи (тот же `signingPanel`), слова восстановления, «All accounts» на главную; удаления passkey здесь нет намеренно; режим уходит в app при закрытии окна |
 | из app, ключ без аккаунта | `noAccountScreen` | «аккаунта нет» + ключ, которым его заводить |
 | из app, `kind: 'login'` + `create: true`, ключ без аккаунта | `handKeysScreen` | ничего не подписывает; по кнопке отдаёт `ok: true, account: null`, `publicKey` (`PUB_WA_` → active) и `owner` (K1 из корня, первый свободный номер → owner). Аккаунт заводит app; Signer найдёт его по ключу при следующем открытии |
+| из app, `kind: 'finish'` (`account`, `publicKey`, `owner`) | `finishScreen` | аккаунт, открытый одним owner-ключом: digits-only memo фабрики (`contracts/account_factory`) кладёт один K1 и в owner, и в active. Ноды должны согласиться, что owner держит этот ключ; Signer выводит его из корня passkey (`ownerKeyOf`, без сети) и им подписывает `updateauth` active: + passkey, − owner-ключ. Passkey уже на active — подписи нет. Отдаёт ответ входа (`account`, `level: 'passkey'`) |
 | из app, `kind: 'sign'` | `confirmScreen` | сводка, подписант, режим подписи строкой, по клику — три режима с пояснениями (`modePicker`; действует со следующей подписи), кнопки |
 | из app, но запрос не дошёл | `timeoutScreen` | список разрешённых origin |
 | из app, прислали смену прав | отказ | экран «Отклонено», подпись невозможна |

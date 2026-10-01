@@ -119,6 +119,22 @@ async function scanChain(root, chain) {
   return found
 }
 
+// Slots searched for a known owner key. Slots are handed out first-free, so a root
+// never gets near this without that many accounts on one network.
+const OWNER_SLOTS = 100
+
+// The slot of an owner key handed out earlier, or null when this root never made it.
+// Derived locally: nothing is asked of the network.
+export function ownerKeyOf(root, chain, publicKey) {
+  for (let index = 0; index < OWNER_SLOTS; index++) {
+    const key = ownerKey(root, chain, index)
+    if (key.publicKey === publicKey) return key
+    key.privateKey.data.array.fill(0)
+  }
+
+  return null
+}
+
 // First slot with no account: a used slot would tie two accounts to one key.
 export async function nextFreeIndex(root, chain) {
   for (let index = 0; ; index++) {
