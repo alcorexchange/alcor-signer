@@ -144,6 +144,9 @@ const DECODERS = [
   { match: (chain, a) => a.account === 'eosio' && Object.hasOwn(SYSTEM_ACTIONS, a.name), decode: systemAction },
   { match: (chain, a) => a.account === chain.alcor.spot && SPOT_CANCELS.has(a.name), decode: spotCancel },
   { match: (chain, a) => a.account === chain.alcor.swap && Object.hasOwn(POOL_ACTIONS, a.name), decode: poolAction },
+  { match: (chain, a) => LIGHT_CLIENT_PROOFS.has(a.name) && Object.hasOwn(chain.bridge?.lightClients ?? {}, a.account), decode: bridgeProof },
+  { match: (chain, a) => a.name === 'credit' && Object.hasOwn(chain.bridge?.gateways ?? {}, a.account), decode: bridgeCredit },
+  { match: (chain, a) => a.account === chain.bridge?.contract && a.name === 'claim', decode: bridgeClaim },
   { match: (chain, a) => a.name === 'transfer', decode: transfer },
 ]
 
@@ -155,6 +158,8 @@ function decode(chain, action) {
 function receiverDecoder(chain, to) {
   if (to === chain.alcor.swap) return swap
   if (to === chain.alcor.spot) return spotOrder
+  if (to === chain.bridge?.contract) return bridgeWithdraw
+  if (to === chain.bridge?.vault) return bridgeDeposit
   return plainTransfer
 }
 
@@ -332,6 +337,62 @@ function systemAction(chain, action) {
   return { ...leg, rows: leg.rows.filter(Boolean) }
 }
 
+// ── bridge.alcor: Telos ↔ Ethereum, WAX ───────────────────────────────────
+//
+// A deposit lands on Telos in two steps: a proof anyone may push (the light client learns
+// a block, the gateway `credit`s the deposit out of it), then the owner's `claim`. A proof
+// moves none of the signer's money, it only bills its rows to `payer`. Leaving is a
+// transfer into the bridge that names where the tokens arrive in the memo.
+
+const LIGHT_CLIENT_PROOFS = new Set(['proveroot', 'prove'])
+
+function bridgeProof(chain, action) {
+  return { title: `Prove ${chain.bridge.lightClients[action.account]} block`, risks: [] }
+}
+
+function bridgeCredit(chain, action) {
+  return { title: `Credit ${chain.bridge.gateways[action.account]} deposit`, risks: [] }
+}
+
+function bridgeClaim(chain, action) {
+  const { owner, sym_code: symbol } = action.data ?? {}
+  return {
+    title: `Claim bridged ${symbol}`,
+    rows: [{ dir: 'in', label: 'You collect', amount: `all credited ${symbol}`, sub: `to ${owner}` }],
+    risks: [],
+  }
+}
+
+// Telos out: `<domain>:<recipient>` — an EVM address or an Antelope account.
+function bridgeWithdraw(chain, { to, amount, memo }) {
+  const [domain, recipient] = splitMemo(memo)
+  if (!recipient) return plainTransfer(chain, { to, amount, memo })
+
+  const network = Object.hasOwn(chain.bridge.networks, domain) ? chain.bridge.networks[domain] : `network #${domain}`
+  return bridged(amount, to, network, recipient)
+}
+
+// Into Telos from a vault chain: `<telos account>[:<note>]`.
+function bridgeDeposit(chain, { to, amount, memo }) {
+  const [recipient] = splitMemo(memo)
+  if (!recipient) return plainTransfer(chain, { to, amount, memo })
+
+  return bridged(amount, to, 'Telos', recipient)
+}
+
+// The recipient lives in the memo, so it is shown whole.
+const bridged = (amount, to, network, recipient) => ({
+  title: `Bridge ${amount.symbol} to ${network}`,
+  out: { amount, to },
+  rows: [{ dir: 'in', label: 'Arrives at', amount: recipient, sub: `on ${network}` }],
+  risks: [],
+})
+
+function splitMemo(memo) {
+  const at = memo.indexOf(':')
+  return at < 0 ? [memo, ''] : [memo.slice(0, at), memo.slice(at + 1)]
+}
+
 function unknown(action) {
   return {
     title: `${action.account} · ${action.name}`,
@@ -480,7 +541,7 @@ function merge(legs) {
  * @returns {{ dir: 'out' | 'in', label: string, amount: string, sub: string }[]}
  */
 function flowsOf(chain, group) {
-  const flows = [...(group.rows ?? [])]
+  const flows = []
   const issuer = (amount) => (amount.contract === chain.systemToken.contract ? null : `${amount.contract} token`)
 
   if (group.out) {
@@ -501,7 +562,8 @@ function flowsOf(chain, group) {
     })
   }
 
-  return flows
+  // After the send: a bridge withdrawal reads "you send, it arrives at".
+  return [...flows, ...(group.rows ?? [])]
 }
 
 function unique(risks) {

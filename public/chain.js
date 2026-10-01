@@ -4,7 +4,7 @@
 // `family` is how signing works. Within `antelope` one passkey serves every network:
 // the rpId is checked against the origin, not the chain.
 
-/** @typedef {{ id: string, family: string, name: string, chainId: string, rpcs: string[], explorer: string, logo: string, permission: string, systemToken: { symbol: string, contract: string }, alcor: { swap: string, spot: string }, slip44: number }} Chain */
+/** @typedef {{ id: string, family: string, name: string, chainId: string, rpcs: string[], explorer: string, logo: string, permission: string, systemToken: { symbol: string, contract: string }, alcor: { swap: string, spot: string }, bridge?: { contract?: string, networks?: Record<string, string>, lightClients?: Record<string, string>, gateways?: Record<string, string>, vault?: string }, slip44: number }} Chain */
 
 /** @type {Record<string, Chain>} */
 export const CHAINS = {
@@ -21,6 +21,15 @@ export const CHAINS = {
     systemToken: { symbol: 'TLOS', contract: 'eosio.token' },
     // Decides which decoder reads an action (summary.js); a swap sent elsewhere isn't a swap.
     alcor: { swap: 'swap.alcor', spot: 'eostokensdex' },
+    // The bridge hub (summary.js). Proof contracts are listed by exact name, not by the
+    // `.alcor` suffix: one redeployed under a new name reads as unknown until added here.
+    bridge: {
+      contract: 'bridge.alcor',
+      // The bridge's domain → name: a withdrawal memo is `<domain>:<recipient>`.
+      networks: { 1: 'Ethereum', '1181148696416462999': 'WAX' },
+      lightClients: { 'eth.lc.alcor': 'Ethereum', 'wax.lc.alcor': 'WAX' },
+      gateways: { 'eth.g.alcor': 'Ethereum', 'wax.g.alcor': 'WAX' },
+    },
     // Network index in the key path from the 24 words (ADR-0010 §3). NEVER change it:
     // another index means other keys, and the words stop finding accounts.
     slip44: 977,
@@ -42,6 +51,8 @@ export const CHAINS = {
     alcor: { swap: 'swap.alcor', spot: 'alcordexmain', liquid: 'liquid.alcor' },
     // Alcor pays CPU: the app puts the payer's `noop` first and adds its signature after ours.
     cpuPayer: { contract: 'liquid.alcor', action: 'noop', actor: 'liquid.alcor', permission: 'bw' },
+    // The bridge's vault here: a deposit to Telos is a transfer in, memo `<telos account>[:<note>]`.
+    bridge: { vault: 'bridge.alcor' },
     // NEVER change it — see Telos.
     slip44: 14,
   },
