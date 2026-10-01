@@ -1563,10 +1563,10 @@ function restoreScreen() {
  */
 function importScreen(passkey, flow = null) {
   const out = stack([])
-  const cleared = el('span', { className: 'hint-quiet', textContent: 'Used once, never stored.' })
+  const cleared = el('span', { className: 'hint-quiet' })
   const input = secretInput({
     placeholder: 'PVT_K1_… or 5…',
-    onCleared: () => (cleared.textContent = 'Used once, never stored. Cleared from your clipboard.'),
+    onCleared: () => (cleared.textContent = 'Cleared from your clipboard.'),
   })
   let network = chain
 
@@ -1576,6 +1576,12 @@ function importScreen(passkey, flow = null) {
       flow
         ? null
         : section('network', [segmented(Object.values(CHAINS).map((entry) => [entry, entry.name, () => chainLogo(entry)]), network, (entry) => (network = entry))]),
+      // Why a private key at all: without this, pasting one reads like the scam it usually is.
+      card([
+        tile({ icon: ICONS.shield, tone: 'mint', title: 'Never leaves this page', sub: 'Signed right here in your browser. Not sent to Alcor or anyone else' }),
+        tile({ icon: ICONS.plus, title: 'Only adds your passkey', sub: 'Your current keys keep working. Nothing is removed unless you turn it on next step' }),
+        tile({ icon: ICONS.eye, title: 'Used once, then forgotten', sub: 'One transaction, then erased. Not saved here or anywhere' }),
+      ]),
       section('private key', [
         input,
         el('div', { className: 'hint safe' }, [
@@ -1586,10 +1592,6 @@ function importScreen(passkey, flow = null) {
             '. ',
             cleared,
           ]),
-        ]),
-        // Why a private key at all: without this, pasting one reads like the scam it usually is.
-        el('div', { className: 'hint hint-quiet' }, [
-          'Why: it signs one transaction that adds your passkey to the account. Then it is erased — nobody keeps it, here or anywhere.',
         ]),
       ]),
       out,
