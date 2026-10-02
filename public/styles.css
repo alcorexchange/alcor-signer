@@ -27,10 +27,10 @@
 
   --primary: #34d399;
   --primary-hover: #4fdcaa;
-  --primary-ink: #032b1d;
-  --primary-fill: #2cb985;
-  --primary-fill-hover: #33c48f;
-  --primary-fill-active: #27a878;
+  --primary-ink: #04150e;
+  --primary-fill: #3ad59d;
+  --primary-fill-hover: #52deab;
+  --primary-fill-active: #2fc48e;
   --primary-line: rgba(52, 211, 153, 0.24);
   --primary-border: rgba(52, 211, 153, 0.4);
 
@@ -979,14 +979,19 @@ a.button { display: flex; align-items: center; justify-content: center; gap: 7px
 
 button.primary,
 a.button.primary {
+  padding: 13px 16px;
   border-color: transparent;
   background: var(--primary-fill);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.28), 0 1px 2px rgba(0, 0, 0, 0.35);
   color: var(--primary-ink);
-  font-weight: 500;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -0.005em;
 }
 button.primary:hover:not(:disabled),
 a.button.primary:hover { background: var(--primary-fill-hover); border-color: transparent; }
-button.primary:active:not(:disabled) { background: var(--primary-fill-active); }
+button.primary:active:not(:disabled) { background: var(--primary-fill-active); box-shadow: none; }
+button.primary:disabled { box-shadow: none; }
 
 /* One size in every state: ready, busy and done swap content, never the height. */
 button.sign {
@@ -1000,7 +1005,7 @@ button.sign {
 button.sign.busy:disabled,
 button.sign.done:disabled { opacity: 1; }
 button.sign.busy { background: color-mix(in srgb, var(--primary-fill) 72%, var(--bg)); }
-button.sign .spinner { border-color: rgba(3, 43, 29, 0.25); border-top-color: var(--primary-ink); }
+button.sign .spinner { border-color: rgba(4, 21, 14, 0.25); border-top-color: var(--primary-ink); }
 
 .action-links {
   display: flex;
