@@ -18,12 +18,14 @@ import { isCpuPayerNoop } from './chain.js'
  *   key?: string,
  *   out?: { amount: Amount, to: string, note?: string },
  *   receive?: Amount,
+ *   exactOut?: boolean,
  *   rows?: { dir: 'out' | 'in', label: string, amount: string, sub: string }[],
  *   risks: Risk[],
  * }} Leg
  *
  * `key`: equal for the legs of one swap, which merge into one row.
  * `receive`: the minimum to receive; zero means any price.
+ * `exactOut`: `receive` is exact, and `out` is the most it may take; the rest comes back.
  */
 
 // Risks are collected per leg BEFORE merging: one leg without a minimum is invisible
@@ -93,7 +95,7 @@ function autoAllows(chain, action) {
   const memo = String(data.memo ?? '')
 
   if (to === chain.alcor.swap) return memo === DEPOSIT || isOwnSwap(memo, String(data.from ?? ''))
-  if (to === chain.alcor.spot) return Boolean(parseAmountAt(memo))
+  if (to === chain.alcor.spot) return Boolean(parseOrder(memo))
   if (chain.alcor.liquid && to === chain.alcor.liquid) return LIQUID_MEMOS.has(memo)
   return false
 }
@@ -113,7 +115,7 @@ function autoSystemAllows(name, data) {
 // there is nothing to check the proceeds against.
 function isOwnSwap(memo, from) {
   const [tag, , recipient] = memo.split('#')
-  return tag === 'swapexactin' && recipient === from
+  return SWAP_TAGS.has(tag) && recipient === from
 }
 
 /**
@@ -464,13 +466,20 @@ function transfer(chain, action) {
   return { ...leg, risks: [...risks, ...leg.risks] }
 }
 
-// AMM: `swapexactin#<route>#<recipient>#<minimum>@<contract>#<deadline>`. A split route is
-// one transfer per route; legs merge only if everything but amounts and route matches.
+// AMM: `<tag>#<route>#<recipient>#<amount>@<contract>#<deadline>`. `swapexactin`: the
+// amount is the minimum to receive. `swapexactout`: it is exactly what arrives, the transfer
+// is the most it may take, and the change goes back to the sender. A split route is one
+// transfer per route; legs merge only if everything but amounts and route matches.
+const SWAP_TAGS = new Set(['swapexactin', 'swapexactout'])
+
 function swap(chain, { from, to, amount, memo }) {
   if (memo === DEPOSIT) return { title: 'Deposit to Alcor', out: { amount, to }, risks: [] }
 
-  const [tag, , recipient, minimum] = memo.split('#')
-  const receive = tag === 'swapexactin' ? parseAmountAt(minimum ?? '') : null
+  const [tag, , recipient, amountOut] = memo.split('#')
+  const exactOut = tag === 'swapexactout'
+  const parsed = SWAP_TAGS.has(tag) ? parseAmountAt(amountOut ?? '') : null
+  // The contract rejects an exact-out of zero; it must not read as "any price" here.
+  const receive = exactOut && parsed?.units === 0n ? null : parsed
   const title = receive ? `Swap ${amount.symbol} → ${receive.symbol}` : `Swap via ${to}`
 
   // The recipient lives in the memo: change one word and `to` still looks right. It sits
@@ -495,17 +504,25 @@ function swap(chain, { from, to, amount, memo }) {
 
   return {
     title,
-    key: ['swap', to, from, recipient, tokenKey(amount), tokenKey(receive)].join('|'),
+    key: [tag, to, from, recipient, tokenKey(amount), tokenKey(receive)].join('|'),
     out: { amount, to },
     receive,
+    exactOut,
     risks,
   }
 }
 
-// Spot: `450.0000 USDT@usdt.alcor` — the whole memo is the amount asked for.
+// Spot: `450.0000 USDT@usdt.alcor` — the whole memo is the amount asked for. With `|min`
+// it is a market order that reverts unless at least that amount arrives.
+const MARKET_MIN = '|min'
+
+function parseOrder(memo) {
+  return parseAmountAt(memo.endsWith(MARKET_MIN) ? memo.slice(0, -MARKET_MIN.length) : memo)
+}
+
 function spotOrder(chain, { to, amount, memo }) {
   const title = 'Order on Alcor'
-  const receive = parseAmountAt(memo)
+  const receive = parseOrder(memo)
 
   if (!receive) {
     return {
@@ -515,7 +532,7 @@ function spotOrder(chain, { to, amount, memo }) {
     }
   }
 
-  // Zero on spot is a market order.
+  // Zero on spot is a market order at any price, with `|min` or without.
   const risks =
     receive.units === 0n ? [{ kind: 'danger', text: 'No minimum was set — this order fills at any price.' }] : []
 
@@ -532,7 +549,7 @@ function plainTransfer(chain, { to, amount, memo }) {
       kind: 'danger',
       text: `The memo asks for a swap, but the money goes to ${to} — Alcor swaps through ${chain.alcor.swap}.`,
     })
-  } else if (parseAmountAt(memo)) {
+  } else if (parseOrder(memo)) {
     risks.push({
       kind: 'danger',
       text: `The memo looks like an Alcor order, but the money goes to ${to} — Alcor trades through ${chain.alcor.spot}.`,
@@ -583,9 +600,11 @@ function flowsOf(chain, group) {
 
   if (group.out) {
     const { amount, to, note } = group.out
-    const sub = [`to ${to}`, issuer(amount), group.count > 1 ? `${group.count} routes` : null, note]
+    const change = group.exactOut ? 'the rest comes back' : null
+    const sub = [`to ${to}`, issuer(amount), group.count > 1 ? `${group.count} routes` : null, change, note]
+    const label = group.exactOut ? 'You send at most' : 'You send'
 
-    flows.push({ dir: 'out', label: 'You send', amount: formatAmount(amount), sub: sub.filter(Boolean).join(' · ') })
+    flows.push({ dir: 'out', label, amount: formatAmount(amount), sub: sub.filter(Boolean).join(' · ') })
   }
 
   if (group.receive) {
@@ -593,7 +612,7 @@ function flowsOf(chain, group) {
     const any = receive.units === 0n
     flows.push({
       dir: 'in',
-      label: any ? 'You receive' : 'You receive at least',
+      label: any || group.exactOut ? 'You receive' : 'You receive at least',
       amount: any ? `any ${receive.symbol}` : formatAmount(receive),
       sub: issuer(receive) ?? '',
     })

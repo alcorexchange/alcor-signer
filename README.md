@@ -463,8 +463,8 @@ Fast ↔ Auto — локально, без транзакции. Лимитов 
 
 | Контракт | Что можно |
 |---|---|
-| пулы (`swap.alcor`) | перевод с memo `deposit`; своп `swapexactin`, где получатель — отправитель; `addliquid`, `subliquid`, `collect` себе, `withdraw`, `getreward`, `stake`, `stakelastpos`, `unstake`, `unstakepos` |
-| спот | перевод с memo-ценой `<amount>@<contract>`; `cancelbuy`, `cancelsell` |
+| пулы (`swap.alcor`) | перевод с memo `deposit`; своп `swapexactin` или `swapexactout`, где получатель — отправитель; `addliquid`, `subliquid`, `collect` себе, `withdraw`, `getreward`, `stake`, `stakelastpos`, `unstake`, `unstakepos` |
+| спот | перевод с memo-ценой `<amount>@<contract>` или маркет-ордером `<минимум>@<contract>\|min`; `cancelbuy`, `cancelsell` |
 | liquid staking (WAX, `alcor.liquid` в реестре) | перевод с memo `stake` или `withdraw` |
 | системный (`eosio`) | `delegatebw` себе без `transfer`; `undelegatebw`, `stakexpr`, `unstakexpr` себе; `refund`, `voterclaim` |
 
@@ -600,8 +600,10 @@ Signer; после второго passkey окно отвечает app (passkey
   контракта `what` заполнен — и наружу уходит «eosio_assert_message assertion
   failure at /v1/chain/push_transaction», по которому не понять ничего. Разбор —
   в `errors.js` и в `utils/antelopeError.ts`; мимо них ошибки ноды не показывать.
-- **Грамматика memo своя у каждого контракта.** Спот кладёт `<asset>@<contract>`,
-  AMM — `swapexactin#пул#получатель#минимум@контракт#дедлайн`, бридж —
+- **Грамматика memo своя у каждого контракта.** Спот кладёт `<asset>@<contract>`
+  (с `|min` — маркет-ордер, который откатится, если придёт меньше), AMM —
+  `swapexactin#пул#получатель#минимум@контракт#дедлайн` или `swapexactout#…#ровно@контракт#…`
+  (тогда перевод — потолок, сдача возвращается отправителю), бридж —
   `<домен сети>:<получатель>` на Telos и `<аккаунт Telos>` в хранилище на WAX. Одним регэкспом не
   покрывается, поэтому в `summary.js` декодер на каждый контракт, и выбирается он
   по получателю перевода (`chain.alcor`, `chain.bridge`), а не по виду memo: memo Alcor на чужой
