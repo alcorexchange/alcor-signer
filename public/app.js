@@ -34,6 +34,7 @@ import {
   linkButton,
   mono,
   note,
+  safeHint,
   options,
   pageTitle,
   section,
@@ -1622,14 +1623,11 @@ function importScreen(passkey, flow = null) {
       ]),
       section('private key', [
         input,
-        el('div', { className: 'hint safe' }, [
-          icon(ICONS.lock, 12),
-          el('span', {}, [
-            'Paste it only here, on ',
-            el('span', { className: 'hint-host', textContent: location.host }),
-            '. ',
-            cleared,
-          ]),
+        safeHint(ICONS.lock, [
+          'Paste it only here, on ',
+          el('span', { className: 'hint-host', textContent: location.host }),
+          '. ',
+          cleared,
         ]),
       ]),
       out,
@@ -1762,7 +1760,7 @@ function importConfirm(passkey, on, privateKey, publicKey, found, flow = null) {
     stays.replaceChildren(
       section('also has access', [
         consequences(others.map(({ name, permission, other }) => `${name}@${permission} · ${other.text}`)),
-        note('They control the account today and keep doing so. The import changes nothing for them.'),
+        safeHint(ICONS.check, ['All fine — they keep access as before. The import changes nothing for them.']),
       ])
     )
     for (const { name, permission, other } of others) seen.add(seenId(name, permission, other))

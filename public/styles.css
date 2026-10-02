@@ -784,6 +784,8 @@ summary::after {
 }
 details[open] summary::after { transform: translateY(1px) rotate(-135deg); }
 details > .stack { padding-bottom: 4px; }
+/* Last on the screen: the summary's own padding plus main's left ~45px to the footer. */
+main > details:last-child { margin-bottom: -18px; }
 
 .raw-action { display: flex; flex-direction: column; gap: 10px; }
 .raw-action + .raw-action { padding-top: 14px; border-top: 1px solid var(--border-soft); }

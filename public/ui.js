@@ -107,6 +107,10 @@ export const section = (label, children) =>
 
 export const note = (text) => el('p', { className: 'note', textContent: text })
 
+/** A reassuring line: green icon, quiet text. */
+export const safeHint = (paths, children) =>
+  el('div', { className: 'hint safe' }, [icon(paths, 12), el('span', {}, children)])
+
 export const card = (children, className = '') =>
   el('div', { className: `card ${className}`.trim() }, children)
 
