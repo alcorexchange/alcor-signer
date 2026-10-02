@@ -6,20 +6,20 @@ export const PINNED_ABIS = {
   "telos": {
     "eosio": "fccb1a515b98d2232a1227279666d9a3fcd41f67fafa0d75212cc0a282564361",
     "eosio.token": "fb8452c70aa203505592aef25b696acaa1aee58805888cc9aae024b4c03af91e",
-    "swap.alcor": "1f427e36adbb87f31fff4ab8c69f29349eaa4eedfa49f0624d67d2835fe713e8",
-    "eostokensdex": "c88d9b5dd8c987356e565594b85c0b288b68566d40630d89ae7d1f155a3b4df1"
+    "swap.alcor": "7252a6b47a0484fae77ee3408aec806102270c4b2a7b5d19eabe0fb7ce1d1c9a",
+    "eostokensdex": "8b43316996c04b0464e3042192dcc4c55a1dea6bef05349e10d434cb648e1c15"
   },
   "wax": {
     "eosio": "a1683bbeb3418ad502aac045372850b5fcfa0aef494795ac70228f01433273d6",
     "eosio.token": "b52fab4efd51790f231ac36b4d44b440e3fb34c8f6d7fb5929ddde69f25647e7",
-    "swap.alcor": "1f427e36adbb87f31fff4ab8c69f29349eaa4eedfa49f0624d67d2835fe713e8",
-    "alcordexmain": "c88d9b5dd8c987356e565594b85c0b288b68566d40630d89ae7d1f155a3b4df1",
+    "swap.alcor": "7252a6b47a0484fae77ee3408aec806102270c4b2a7b5d19eabe0fb7ce1d1c9a",
+    "alcordexmain": "8b43316996c04b0464e3042192dcc4c55a1dea6bef05349e10d434cb648e1c15",
     "liquid.alcor": "4742294631d51bd40586de1d88bca778c829a711c558e76415bdda22802a7bb2"
   },
   "xpr": {
     "eosio": "cb762c58e4823e73a9d677721929305657e1134f0d34a2f318f7c9ca638eaba8",
     "eosio.token": "bf13acab1b4bc2676ef6f0afcf1765ab5db3ffa1ac18453a628e1e65fe26e045",
-    "swap.alcor": "1f427e36adbb87f31fff4ab8c69f29349eaa4eedfa49f0624d67d2835fe713e8",
+    "swap.alcor": "7252a6b47a0484fae77ee3408aec806102270c4b2a7b5d19eabe0fb7ce1d1c9a",
     "alcor": "8b43316996c04b0464e3042192dcc4c55a1dea6bef05349e10d434cb648e1c15"
   }
 }
