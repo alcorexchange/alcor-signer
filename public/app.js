@@ -1004,37 +1004,57 @@ async function disableFastSign(entry) {
  * such an ABI, so a mismatch here is a system contract updated before `yarn abis`, not
  * a lying node — and refusing would lock the user out of turning off a stolen key.
  *
- * @param {{ known?: string[], review?: boolean }} [options] — `known`: keys this change
- *   adds, not stored yet; `review: false` where the screen already listed what stays
+ * @param {{ known?: string[], seen?: Set<string>, review?: boolean }} [options] — `known`:
+ *   keys this change adds, not stored yet; `seen`: what the screen already listed
+ *   (`seenId`); `review: false` where the screen listed all of it
  */
-async function submitWith(on, sign, actions, { known = [], review = true } = {}) {
+async function submitWith(on, sign, actions, { known = [], seen = new Set(), review = true } = {}) {
   const built = await buildTransaction(on, actions)
-  if (review) await reviewAuthority(built.actions, known)
+  if (review) await reviewAuthority(built.actions, known, seen)
   return pushTransaction(on, await sign(built.transaction, built.chainId))
 }
+
+async function ourKeys(known = []) {
+  const hot = await listHotKeys()
+  return new Set([...loadPasskeys().map((entry) => entry.publicKey), ...hot.map((key) => key.publicKey), ...known])
+}
+
+/** Who keeps a permission besides this browser. `id` is exact, `text` is for people. */
+function othersOn(auth, ours) {
+  return [
+    ...auth.keys
+      .filter((entry) => !ours.has(entry.key))
+      .map((entry) => ({ id: entry.key, text: `Another key: ${shortKey(entry.key)}` })),
+    ...auth.accounts.map(({ permission: level }) => {
+      const id = `${level.actor}@${level.permission}`
+      return { id, text: `Another account: ${id}` }
+    }),
+    ...auth.waits.map((entry) => ({ id: `wait ${entry.wait_sec}`, text: `A time delay of ${entry.wait_sec} s` })),
+  ]
+}
+
+const seenId = (account, permission, other) => `${account}@${permission} ${other.id}`
 
 /**
  * Before the vault rewrites a permission, the user sees who else keeps it: the nodes
  * agreed on the authority, but only the user knows whether a foreign key belongs there.
- * Asks only when something stays that this browser doesn't hold.
+ * Asks only when something stays that this browser doesn't hold and the screen didn't show.
  *
  * @param {object[]} actions — decoded from the built transaction
  * @param {string[]} known — keys this change adds
+ * @param {Set<string>} seen — `seenId`s the screen already listed
  * @throws when the user says no
  */
-async function reviewAuthority(actions, known) {
-  const hot = await listHotKeys()
-  const ours = new Set([...loadPasskeys().map((entry) => entry.publicKey), ...hot.map((key) => key.publicKey), ...known])
+async function reviewAuthority(actions, known, seen) {
+  const ours = await ourKeys(known)
 
   for (const action of actions) {
     if (action.account !== 'eosio' || action.name !== 'updateauth') continue
 
     const { account, permission, auth } = action.data
-    const foreign = [
-      ...auth.keys.filter((entry) => !ours.has(entry.key)).map((entry) => `Another key: ${shortKey(entry.key)}`),
-      ...auth.accounts.map((entry) => `Another account: ${entry.permission.actor}@${entry.permission.permission}`),
-      ...auth.waits.map((entry) => `A time delay of ${entry.wait_sec} s`),
-    ]
+    const foreign = othersOn(auth, ours)
+      .filter((other) => !seen.has(seenId(account, permission, other)))
+      .map((other) => other.text)
     if (!foreign.length) continue
 
     const yes = await confirmDialog({
@@ -1663,6 +1683,10 @@ function importConfirm(passkey, on, privateKey, publicKey, found, flow = null) {
   const chosen = new Set(asked ? [asked] : accounts.keys())
   let withFast = true
   let removeOld = false
+  // Filled once the nodes answer; until then the import asks about them before signing.
+  const stays = el('div')
+  const seen = new Set()
+  listStays()
 
   const rows = [...accounts].map(([name, permission]) =>
     checkbox(name, (checked) => (checked ? chosen.add(name) : chosen.delete(name)), {
@@ -1679,6 +1703,7 @@ function importConfirm(passkey, on, privateKey, publicKey, found, flow = null) {
         `${on.name} · key ${shortKey(publicKey)}`
       ),
       section(accounts.size > 1 ? 'accounts' : 'account', [el('div', { className: 'checks' }, rows)]),
+      stays,
       section('options', [
         card([
           switchRow({
@@ -1708,6 +1733,7 @@ function importConfirm(passkey, on, privateKey, publicKey, found, flow = null) {
         : [
             'Cancel',
             () => {
+              privateKey?.data.array.fill(0)
               privateKey = null
               if (flow?.back) flow.back()
               else homeScreen()
@@ -1715,6 +1741,32 @@ function importConfirm(passkey, on, privateKey, publicKey, found, flow = null) {
           ],
     ],
   })
+
+  // What keeps access today and keeps it after the import. Calm on purpose: nothing
+  // changes for them, and cancelling would not remove them anyway.
+  async function listStays() {
+    const others = []
+    try {
+      const ours = await ourKeys([publicKey])
+      for (const name of accounts.keys()) {
+        for (const permission of new Set(['owner', on.permission])) {
+          const auth = await agreedAuthority(on, name, permission)
+          for (const other of othersOn(auth, ours)) others.push({ name, permission, other })
+        }
+      }
+    } catch {
+      return // The review before signing lists them instead.
+    }
+    if (!others.length) return
+
+    stays.replaceChildren(
+      section('also has access', [
+        consequences(others.map(({ name, permission, other }) => `${name}@${permission} · ${other.text}`)),
+        note('They control the account today and keep doing so. The import changes nothing for them.'),
+      ])
+    )
+    for (const { name, permission, other } of others) seen.add(seenId(name, permission, other))
+  }
 
   async function apply() {
     const names = [...chosen]
@@ -1781,7 +1833,10 @@ function importConfirm(passkey, on, privateKey, publicKey, found, flow = null) {
       }
 
       out.replaceChildren(status('Signing with the imported key'))
-      const txid = await submitWith(on, withKey(privateKey), actions, { known })
+      const txid = await submitWith(on, withKey(privateKey), actions, { known, seen })
+      // Only after success: a failed try stays on this screen, and the retry signs with it.
+      privateKey.data.array.fill(0)
+      privateKey = null
 
       for (const { secret, scope, n } of hotKeys) await adoptHotKey(secret, scope, n)
 
@@ -1818,7 +1873,6 @@ function importConfirm(passkey, on, privateKey, publicKey, found, flow = null) {
     } finally {
       for (const { secret } of hotKeys) secret.fill(0)
       forgetRoot(root)
-      privateKey = null
     }
   }
 }
