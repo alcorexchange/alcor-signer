@@ -352,13 +352,14 @@ export const state = ({ icon: paths, tone = '', title, text }) =>
     text ? el('div', { className: 'state-text', textContent: text }) : null,
   ])
 
+/** `amount`: one line, or one per token for a pair. */
 export const flow = ({ dir, label, amount, sub }) =>
   tile({
     icon: dir === 'out' ? ICONS.out : ICONS.in,
     tone: dir === 'out' ? 'pink' : 'mint',
     title: label,
     sub,
-    aside: el('span', { className: 'flow-amount', textContent: amount }),
+    aside: el('span', { className: 'flow-amount' }, [amount].flat().map((line) => el('span', { textContent: line }))),
     className: `flow ${dir}`,
   })
 

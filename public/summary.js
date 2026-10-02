@@ -19,11 +19,14 @@ import { isCpuPayerNoop } from './chain.js'
  *   out?: { amount: Amount, to: string, note?: string },
  *   receive?: Amount,
  *   exactOut?: boolean,
- *   rows?: { dir: 'out' | 'in', label: string, amount: string, sub: string }[],
+ *   deposit?: { amount: Amount, from: string },
+ *   liquidity?: { owner: string, desired: Amount[], sub: string },
+ *   rows?: { dir: 'out' | 'in', label: string, amount: string | string[], sub: string }[],
  *   risks: Risk[],
  * }} Leg
  *
  * `key`: equal for the legs of one swap, which merge into one row.
+ * `deposit`, `liquidity`: a deposit `addliquid` spends folds into its row.
  * `receive`: the minimum to receive; zero means any price.
  * `exactOut`: `receive` is exact, and `out` is the most it may take; the rest comes back.
  */
@@ -32,8 +35,9 @@ import { isCpuPayerNoop } from './chain.js'
 // in the summed amounts, and it swaps its share at any price.
 export function summarize(chain, actions) {
   const legs = actions.filter((action) => !isCpuPayerNoop(chain, action)).map((action) => decode(chain, action))
-  const groups = merge(legs)
-  const titles = [...new Set(legs.map((leg) => leg.title))]
+  const folded = foldDeposits(chain, legs)
+  const groups = merge(folded)
+  const titles = [...new Set(folded.map((leg) => leg.title))]
 
   let title = `${legs.length} actions`
   if (titles.length === 1) title = groups.length > 1 ? `${titles[0]} ×${groups.length}` : titles[0]
@@ -186,6 +190,17 @@ function spotCancel(chain, action) {
 //
 // Amounts here are `asset` without a contract: the pool knows the token, so it is named by id.
 
+// Native token amounts go unmarked; the rest name their contract, as `flowsOf` does.
+function issuedBy(chain, amounts) {
+  const foreign = amounts.filter((amount) => amount.contract !== chain.systemToken.contract)
+  const contracts = [...new Set(foreign.map((amount) => amount.contract))]
+  if (!foreign.length) return null
+  if (foreign.length === amounts.length && contracts.length === 1) {
+    return `${contracts[0]} token${amounts.length > 1 ? 's' : ''}`
+  }
+  return foreign.map((amount) => `${amount.symbol} by ${amount.contract}`).join(' · ')
+}
+
 const assetRow = (dir, label, text, sub) => {
   const amount = parseAmount(text, null)
   return amount ? { dir, label, amount: formatAmount(amount), sub } : null
@@ -206,7 +221,7 @@ function startPrice({ tokenA, tokenB, sqrtPriceX64 }) {
 
 const POOL_ACTIONS = {
   // Tokens are told apart by contract: a fake USDC has the same symbol.
-  createpool: (data) => {
+  createpool: (data, chain) => {
     const start = startPrice(data)
     if (!start) {
       return {
@@ -224,29 +239,49 @@ const POOL_ACTIONS = {
           dir: 'in',
           label: 'New pool',
           amount: `${a.symbol} / ${b.symbol}`,
-          sub: `${a.contract} / ${b.contract} · ${Number(data.fee) / 10000}% fee`,
+          sub: [issuedBy(chain, [a, b]), `${Number(data.fee) / 10000}% fee`].filter(Boolean).join(' · '),
         },
         { dir: 'in', label: 'Start price', amount: `${price} ${b.symbol}`, sub: `per 1 ${a.symbol}` },
       ],
       risks: [],
     }
   },
-  addliquid: (data) => ({
-    title: 'Add liquidity',
-    rows: [
-      assetRow('out', 'You add up to', data.tokenADesired, pool(data)),
-      assetRow('out', 'You add up to', data.tokenBDesired, pool(data)),
-    ],
-    risks: [],
-  }),
-  subliquid: (data) => ({
-    title: 'Remove liquidity',
-    rows: [
-      assetRow('in', 'You receive at least', data.tokenAMin, pool(data)),
-      assetRow('in', 'You receive at least', data.tokenBMin, pool(data)),
-    ],
-    risks: [],
-  }),
+  // A zero side is an out-of-range position: one token only.
+  addliquid: (data) => {
+    const parsed = [data.tokenADesired, data.tokenBDesired].map((text) => parseAmount(text, null))
+    if (parsed.some((amount) => !amount)) {
+      return {
+        title: 'Add liquidity',
+        rows: [],
+        risks: [{ kind: 'warn', text: `Alcor cannot read the amounts added to ${pool(data)}. Read every field below.` }],
+      }
+    }
+
+    const desired = parsed.filter((amount) => amount.units > 0n)
+    return {
+      title: 'Add liquidity',
+      liquidity: { owner: String(data.owner), desired, sub: pool(data) },
+      rows: desired.length ? [{ dir: 'out', label: 'You add up to', amount: desired.map(formatAmount), sub: pool(data) }] : [],
+      risks: [],
+    }
+  },
+  // A zero minimum is shown as is: it is no protection, not a missing side.
+  subliquid: (data) => {
+    const minimums = [data.tokenAMin, data.tokenBMin].map((text) => parseAmount(text, null))
+    if (minimums.some((amount) => !amount)) {
+      return {
+        title: 'Remove liquidity',
+        rows: [],
+        risks: [{ kind: 'warn', text: `Alcor cannot read the amounts taken from ${pool(data)}. Read every field below.` }],
+      }
+    }
+
+    return {
+      title: 'Remove liquidity',
+      rows: [{ dir: 'in', label: 'You receive at least', amount: minimums.map(formatAmount), sub: pool(data) }],
+      risks: [],
+    }
+  },
   // collect maximums mean "take everything" and are huge, so no amounts.
   collect: (data) => ({
     title: 'Collect fees',
@@ -304,7 +339,7 @@ const POOL_ACTIONS = {
 }
 
 function poolAction(chain, action) {
-  const leg = POOL_ACTIONS[action.name](action.data ?? {})
+  const leg = POOL_ACTIONS[action.name](action.data ?? {}, chain)
   return { ...leg, rows: leg.rows.filter(Boolean) }
 }
 
@@ -473,7 +508,7 @@ function transfer(chain, action) {
 const SWAP_TAGS = new Set(['swapexactin', 'swapexactout'])
 
 function swap(chain, { from, to, amount, memo }) {
-  if (memo === DEPOSIT) return { title: 'Deposit to Alcor', out: { amount, to }, risks: [] }
+  if (memo === DEPOSIT) return { title: 'Deposit to Alcor', out: { amount, to }, deposit: { amount, from }, risks: [] }
 
   const [tag, , recipient, amountOut] = memo.split('#')
   const exactOut = tag === 'swapexactout'
@@ -565,6 +600,46 @@ function plainTransfer(chain, { to, amount, memo }) {
 
 // ── merging and output ────────────────────────────────────────────────────
 
+/**
+ * Alcor adds liquidity in two steps: a `deposit` per token, then `addliquid` takes up to
+ * that much from the balance; what it leaves stays there, withdrawable. Deposits that
+ * equal the desired amounts exactly, from the position's owner, read as one row.
+ * Anything else stays apart: a deposit that does not match is money that moves on its own.
+ */
+function foldDeposits(chain, legs) {
+  const used = new Set()
+
+  const folded = legs.map((leg) => {
+    if (!leg.liquidity?.desired.length) return leg
+
+    const free = legs.filter((other) => other.deposit && !used.has(other))
+    const matched = []
+    for (const want of leg.liquidity.desired) {
+      const deposit = free.find(
+        (other) =>
+          !matched.includes(other) &&
+          other.deposit.from === leg.liquidity.owner &&
+          sameUnits(other.deposit.amount, want)
+      )
+      if (!deposit) return leg
+      matched.push(deposit)
+    }
+
+    for (const deposit of matched) used.add(deposit)
+    const amounts = matched.map((deposit) => deposit.deposit.amount)
+    const sub = [leg.liquidity.sub, issuedBy(chain, amounts), 'the rest stays on Alcor']
+    return {
+      ...leg,
+      rows: [{ dir: 'out', label: 'You add up to', amount: amounts.map(formatAmount), sub: sub.filter(Boolean).join(' · ') }],
+    }
+  })
+
+  return folded.filter((leg) => !used.has(leg))
+}
+
+// `addliquid` amounts carry no contract: the pool decides it.
+const sameUnits = (a, b) => a.symbol === b.symbol && a.precision === b.precision && a.units === b.units
+
 function merge(legs) {
   const groups = []
   const byKey = new Map()
@@ -592,7 +667,7 @@ function merge(legs) {
  * Send/receive rows. The token contract is always shown except for the native token:
  * a symbol is just a string, only the contract tells a fake apart.
  *
- * @returns {{ dir: 'out' | 'in', label: string, amount: string, sub: string }[]}
+ * @returns {{ dir: 'out' | 'in', label: string, amount: string | string[], sub: string }[]}
  */
 function flowsOf(chain, group) {
   const flows = []
