@@ -26,9 +26,9 @@ export const CHAINS = {
     bridge: {
       contract: 'bridge.alcor',
       // The bridge's domain → name: a withdrawal memo is `<domain>:<recipient>`.
-      networks: { 1: 'Ethereum', '1181148696416462999': 'WAX' },
-      lightClients: { 'eth.lc.alcor': 'Ethereum', 'wax.lc.alcor': 'WAX' },
-      gateways: { 'eth.g.alcor': 'Ethereum', 'wax.g.alcor': 'WAX' },
+      networks: { 1: 'Ethereum', 56: 'BNB Chain', '1181148696416462999': 'WAX' },
+      lightClients: { 'eth.lc.alcor': 'Ethereum', 'bsc.lc.alcor': 'BNB Chain', 'wax.lc.alcor': 'WAX' },
+      gateways: { 'eth.g.alcor': 'Ethereum', 'bsc.g.alcor': 'BNB Chain', 'wax.g.alcor': 'WAX' },
     },
     // Network index in the key path from the 24 words (ADR-0010 §3). NEVER change it:
     // another index means other keys, and the words stop finding accounts.

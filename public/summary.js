@@ -411,7 +411,7 @@ function systemAction(chain, action) {
   return { ...leg, rows: leg.rows.filter(Boolean) }
 }
 
-// ── bridge.alcor: Telos ↔ Ethereum, WAX ───────────────────────────────────
+// ── bridge.alcor: Telos ↔ Ethereum, BNB Chain, WAX ────────────────────────
 //
 // A deposit lands on Telos in two steps: a proof anyone may push (the light client learns
 // a block, the gateway `credit`s the deposit out of it), then the owner's `claim`. A proof
