@@ -1,5 +1,6 @@
 // Home screen cache: accounts, balances and levels, so the screen shows up at once and
-// the chain corrects it quietly. Public data only — nothing here can sign.
+// the chain corrects it quietly; plus which accounts had a mode picked by hand.
+// Public data only — nothing here can sign.
 
 const KEY = 'alcor-signer/home/v1'
 

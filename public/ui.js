@@ -379,13 +379,13 @@ export const feeCovered = () =>
 
 /**
  * A choice folded into one row, "label · value ⌄", with the options unfolding below.
+ * `chosen` starts selected; picking anything but `current` shows its note.
  *
- * @param {{ label: string, current: string, disabled?: boolean,
+ * @param {{ label: string, current: string, chosen?: string, disabled?: boolean,
  *   options: { value: string, name: string, text: string, icon: string[], tone?: 'mint' | 'amber' }[],
  *   note?: (value: string) => string, onpick: (value: string) => unknown }} props
  */
-export function modePicker({ label, options, current, disabled = false, note, onpick }) {
-  let chosen = current
+export function modePicker({ label, options, current, chosen = current, disabled = false, note, onpick }) {
   const byValue = (value) => options.find((option) => option.value === value)
 
   const box = el('div', { className: 'mode' })

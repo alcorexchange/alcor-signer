@@ -823,6 +823,7 @@ function signingPanel(entry, { onState, onRemove }) {
       const txid = await action()
       level = finalLevel
       rememberValue('levels', id, level)
+      markPicked(entry.chain.chainId, entry.name)
       render()
       out.replaceChildren(...[banner('ok', doneText(txid)), txid ? explorerLink(txid, entry.chain) : null].filter(Boolean))
     } catch (error) {
@@ -889,6 +890,9 @@ function signingPanel(entry, { onState, onRemove }) {
 }
 
 const scopeOfEntry = (entry) => scopeOf(entry.chain, entry.name, entry.permission)
+
+// Once the person picks a mode for an account, the confirm screen stops offering Fast.
+const markPicked = (chainId, name) => rememberValue('picked', accountId(chainId, name), true)
 
 async function signingLevel(entry) {
   const key = await loadHotKey(scopeOfEntry(entry))
@@ -1837,6 +1841,7 @@ function importConfirm(passkey, on, privateKey, publicKey, found, flow = null) {
       privateKey = null
 
       for (const { secret, scope, n } of hotKeys) await adoptHotKey(secret, scope, n)
+      for (const name of names) markPicked(on.chainId, name)
 
       // Go straight back unless there is a note to show.
       if (flow?.reply) {
@@ -2281,6 +2286,7 @@ function enrollScreen({ request, reply }) {
         const scope = scopeOf(chain, name, permission)
         const trade = mode === 'passkey' ? null : await enrollHotKey(passkey, scope)
         if (mode === 'auto') await setAutoSign(scope, true)
+        markPicked(chain.chainId, name)
 
         console.info('[vault] enroll: sending keys', passkey.publicKey, trade?.publicKey ?? '(no fast sign)')
         reply({
@@ -2543,7 +2549,12 @@ async function confirmScreen({ request, reply }) {
    */
   const entry = signer && { chain, name: signer.actor, permission: signer.permission, passkey }
   const current = session ? (session.auto ? 'auto' : 'fast') : 'passkey'
-  let choice = current
+  // A new account starts on Fast: offered until the person picks a mode for it.
+  const offered =
+    current === 'passkey' && choosable && signers.length === 1 && !cachedValue('picked', accountId(chain.chainId, signer.actor))
+      ? 'fast'
+      : current
+  let choice = offered
 
   // Known only for one signer on the working permission, and with the node's answer:
   // a guessed "passkey" would switch the app off the iframe for an Auto account.
@@ -2556,6 +2567,7 @@ async function confirmScreen({ request, reply }) {
           label: 'signing mode',
           options: levelOptions(),
           current,
+          chosen: offered,
           disabled: !choosable,
           note: (level) =>
             `${LEVEL_NAME[level]} from the next signature — this one signs as usual.` +
@@ -2595,7 +2607,10 @@ async function confirmScreen({ request, reply }) {
       },
     })
 
-  const remember = (level) => rememberValue('levels', accountId(chain.chainId, signer.actor), level)
+  const remember = (level) => {
+    rememberValue('levels', accountId(chain.chainId, signer.actor), level)
+    markPicked(chain.chainId, signer.actor)
+  }
 
   const finish = async () => {
     // The mode is fixed at click time; tabs touched during the prompt don't count.
@@ -2616,6 +2631,8 @@ async function confirmScreen({ request, reply }) {
     answer({ ok: true, ...signed })
 
     if (next === current) {
+      // Turned the offered Fast down: Passkey is now the person's own choice.
+      if (next !== offered) remember(next)
       setDone(confirm, 'Signed — back to the app')
       setTimeout(() => window.close(), 400)
       return
