@@ -475,7 +475,8 @@ Fast ↔ Auto — локально, без транзакции. Лимитов 
 | liquid staking (WAX, `alcor.liquid` в реестре) | перевод с memo `stake` или `withdraw` |
 | системный (`eosio`) | `delegatebw` себе без `transfer`; `undelegatebw`, `stakexpr`, `unstakexpr` себе; `refund`, `voterclaim` |
 
-Не в списке намеренно: `createpool`, `lockpos`, `transferpos`, `getfees`,
+Не в списке намеренно: `createpool`, фермы (`newincentive`, переводы с memo
+`activeincent` и `incentreward#<id>` — награда уходит стейкерам насовсем), `lockpos`, `transferpos`, `getfees`,
 `buyram` и `sellram` (сделка по рыночной цене RAM), стейк на чужой аккаунт, и
 **OTC целиком** — там цена та, что в оффере, а оффер выбирает app: XSS создал бы
 оффер «мусор за весь баланс» и исполнил его. Всё остальное открывает окно: это

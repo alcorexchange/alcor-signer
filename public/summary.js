@@ -22,10 +22,12 @@ import { isCpuPayerNoop } from './chain.js'
  *   deposit?: { amount: Amount, from: string },
  *   liquidity?: { owner: string, desired: Amount[], sub: string },
  *   rows?: { dir: 'out' | 'in', label: string, amount: string | string[], sub: string }[],
+ *   side?: boolean,
  *   risks: Risk[],
  * }} Leg
  *
  * `key`: equal for the legs of one swap, which merge into one row.
+ * `side`: a step of another action (a farm's fee or reward); it names the transaction only alone.
  * `deposit`, `liquidity`: a deposit `addliquid` spends folds into its row.
  * `receive`: the minimum to receive; zero means any price.
  * `exactOut`: `receive` is exact, and `out` is the most it may take; the rest comes back.
@@ -37,10 +39,11 @@ export function summarize(chain, actions) {
   const legs = actions.filter((action) => !isCpuPayerNoop(chain, action)).map((action) => decode(chain, action))
   const folded = foldDeposits(chain, legs)
   const groups = merge(folded)
-  const titles = [...new Set(folded.map((leg) => leg.title))]
+  const named = folded.some((leg) => !leg.side) ? groups.filter((group) => !group.side) : groups
+  const titles = [...new Set(named.map((group) => group.title))]
 
   let title = `${legs.length} actions`
-  if (titles.length === 1) title = groups.length > 1 ? `${titles[0]} ×${groups.length}` : titles[0]
+  if (titles.length === 1) title = named.length > 1 ? `${titles[0]} ×${named.length}` : titles[0]
   else if (titles.length === 2) title = titles.join(' + ')
 
   return {
@@ -54,7 +57,8 @@ export function summarize(chain, actions) {
 // there, for `addliquid` to use.
 const DEPOSIT = 'deposit'
 
-// Pool and farm actions on the user's own positions. Not here: `createpool`, `lockpos`,
+// Pool and farm actions on the user's own positions. Not here: `createpool`, `newincentive`
+// and its fee and reward transfers (the money goes to stakers for good), `lockpos`,
 // `transferpos`, `getfees` and the admin actions — they go through the window.
 const AUTO_POOL_ACTIONS = new Set([
   'addliquid',
@@ -208,6 +212,8 @@ const assetRow = (dir, label, text, sub) => {
 
 const pool = (data) => `pool #${data.poolId}`
 
+const DAY = 24 * 60 * 60
+
 // sqrtPriceX64 is √(B per A) in raw units, Q64.64. Shown, never summed, so a float will do.
 function startPrice({ tokenA, tokenB, sqrtPriceX64 }) {
   const a = parseAmount(tokenA?.quantity, tokenA?.contract)
@@ -326,6 +332,25 @@ const POOL_ACTIONS = {
     rows: [],
     risks: [{ kind: 'danger', text: `The position in ${pool(data)} goes to ${data.to}. Whoever holds it owns the liquidity.` }],
   }),
+  // The farm pays out what `incentreward#<id>` transfers bring; `rewardToken` is zero, it names the token.
+  newincentive: (data, chain) => {
+    const reward = parseAmount(data.rewardToken?.quantity, String(data.rewardToken?.contract ?? ''))
+    const days = Number(data.duration) / DAY
+    if (!reward || !Number.isInteger(days) || days < 1) {
+      return {
+        title: 'Create farm',
+        rows: [],
+        risks: [{ kind: 'warn', text: `Alcor cannot read the farm created for ${pool(data)}. Read every field below.` }],
+      }
+    }
+
+    const sub = [`rewards in ${reward.symbol}`, issuedBy(chain, [reward]), `over ${days} day${days === 1 ? '' : 's'}`]
+    return {
+      title: 'Create farm',
+      rows: [{ dir: 'in', label: 'New farm', amount: pool(data), sub: sub.filter(Boolean).join(' · ') }],
+      risks: [],
+    }
+  },
   lockpos: (data) => ({
     title: 'Lock position',
     rows: [],
@@ -507,8 +532,20 @@ function transfer(chain, action) {
 // transfer per route; legs merge only if everything but amounts and route matches.
 const SWAP_TAGS = new Set(['swapexactin', 'swapexactout'])
 
+// Farms: the fee is consumed by the sender's next `newincentive`; a reward goes to the farm
+// with that id, and the contract refuses it unless the sender created that farm.
+const FARM_FEE = 'activeincent'
+const FARM_REWARD = /^incentreward#(\d{1,19})$/
+
 function swap(chain, { from, to, amount, memo }) {
   if (memo === DEPOSIT) return { title: 'Deposit to Alcor', out: { amount, to }, deposit: { amount, from }, risks: [] }
+  if (memo === FARM_FEE) return { title: 'Farm creation fee', side: true, out: { amount, to, note: 'farm creation fee' }, risks: [] }
+
+  const farm = memo.match(FARM_REWARD)?.[1]
+  if (farm) {
+    const note = `reward for farm #${farm} · paid out to stakers`
+    return { title: 'Fund farm', side: true, out: { amount, to, note }, risks: [] }
+  }
 
   const [tag, , recipient, amountOut] = memo.split('#')
   const exactOut = tag === 'swapexactout'
