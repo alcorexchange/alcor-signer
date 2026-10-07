@@ -78,9 +78,8 @@ import { k1PublicKey } from './k1.js'
 import {
   forgetRoot,
   nextFreeIndex,
-  ownerKey,
   ownerKeyOf,
-  publicOnly,
+  ownerPublicKey,
   rootAccounts,
   rootFromPasskey,
   rootFromWords,
@@ -295,15 +294,28 @@ async function createKeyFlow(out, then, { words = true } = {}) {
   }
 }
 
-async function findKeyFlow(out, then, onFail = (error) => out.replaceChildren(failure(error))) {
+// `ownerOn` — a sign-up: the next free owner key on that network comes from the same
+// touch, while the root is still here. A node that does not answer gives null, and the
+// owner costs one more touch later.
+async function findKeyFlow(out, then, { onFail = (error) => out.replaceChildren(failure(error)), ownerOn = null } = {}) {
   out.replaceChildren(status('Pick your key — confirm with your passkey'))
 
+  let root = null
   try {
-    const { passkey, root } = await discoverPasskey()
-    forgetRoot(root)
-    then(rememberPasskey(passkey))
+    const found = await discoverPasskey()
+    root = found.root
+
+    let owner = null
+    if (ownerOn) {
+      out.replaceChildren(status('Picking the owner key'))
+      owner = await nextFreeIndex(root, ownerOn).then((free) => free.publicKey, () => null)
+    }
+
+    then(rememberPasskey(found.passkey), owner)
   } catch (error) {
     onFail(error)
+  } finally {
+    forgetRoot(root)
   }
 }
 
@@ -353,10 +365,10 @@ function newAccountScreen(passkey, root) {
 
   Promise.all(
     Object.values(CHAINS).map(async (network) => {
-      const owner = await nextFreeIndex(root, network).catch(() => null)
+      const owner = await nextFreeIndex(root, network).then((free) => free.publicKey, () => null)
       return section(network.name, [
         card([
-          field('owner', owner ? mono(owner.publicKey) : 'the network did not answer'),
+          field('owner', owner ? mono(owner) : 'the network did not answer'),
           field('active', mono(passkey.publicKey)),
         ]),
       ])
@@ -1248,7 +1260,8 @@ async function coverageSection(passkey, root, out) {
   const taken = new Map()
   const allocate = async (chain) => {
     const free = (await nextFreeIndex(root, chain)).index
-    return ownerKey(root, chain, Math.max(free, (taken.get(chain.chainId) ?? -1) + 1))
+    const index = Math.max(free, (taken.get(chain.chainId) ?? -1) + 1)
+    return { index, publicKey: ownerPublicKey(root, chain, index) }
   }
 
   const rows = await Promise.all(
@@ -1330,9 +1343,9 @@ async function attachRecovery(entry, allocate, out) {
  * Owner changes only when we sign as owner; a linked account (owner is another
  * wallet) only gets the new passkey on active.
  *
- * @param {{ chain, name: string, oldOwnerKey?: object, oldPasskey?: object, newPasskey, newOwnerKey: object }} move
+ * @param {{ chain, name: string, oldOwnerKey?: object, oldPasskey?: object, newPasskey, newOwner: string }} move
  */
-async function moveAccount({ chain: on, name, oldOwnerKey, oldPasskey, newPasskey, newOwnerKey }) {
+async function moveAccount({ chain: on, name, oldOwnerKey, oldPasskey, newPasskey, newOwner }) {
   const [owner, active, hot] = await Promise.all([
     agreedAuthority(on, name, 'owner'),
     agreedAuthority(on, name, 'active'),
@@ -1361,13 +1374,13 @@ async function moveAccount({ chain: on, name, oldOwnerKey, oldPasskey, newPasske
   if (signer.by === 'owner') {
     actions.push(
       editKeysAction(name, 'owner', owner, {
-        add: [newOwnerKey.publicKey],
+        add: [newOwner],
         remove: [oldOwnerKey?.publicKey, oldPasskey?.publicKey].filter(Boolean),
       })
     )
   }
 
-  const txid = await submitWith(on, signer.sign, actions, { known: [newPasskey.publicKey, newOwnerKey.publicKey] })
+  const txid = await submitWith(on, signer.sign, actions, { known: [newPasskey.publicKey, newOwner] })
   await forgetHotKeysOf(on, name)
   return { txid, owner: signer.by === 'owner' }
 }
@@ -1392,14 +1405,14 @@ async function moveAll(accounts, { oldPasskey, newPasskey, newRoot }) {
 
   for (const entry of accounts) {
     try {
-      const newOwnerKey = ownerKey(newRoot, entry.chain, allocate(entry.chain, entry.key?.index))
+      const newOwner = ownerPublicKey(newRoot, entry.chain, allocate(entry.chain, entry.key?.index))
       const moved = await moveAccount({
         chain: entry.chain,
         name: entry.name,
         oldOwnerKey: entry.key,
         oldPasskey,
         newPasskey,
-        newOwnerKey,
+        newOwner,
       })
       results.push({ entry, ...moved })
     } catch (error) {
@@ -1826,10 +1839,10 @@ function importConfirm(passkey, on, privateKey, publicKey, found, flow = null) {
           notes.push(`${name}@owner needs ${owner.threshold} signatures — the 24 words alone would not recover it, so they were not added.`)
         } else if (permission === 'owner') {
           if (nextIndex === null) nextIndex = (await nextFreeIndex(root, on)).index
-          const recovery = ownerKey(root, on, nextIndex++)
-          known.push(recovery.publicKey)
+          const recovery = ownerPublicKey(root, on, nextIndex++)
+          known.push(recovery)
           actions.push(
-            editKeysAction(name, 'owner', owner, { add: [recovery.publicKey], remove: removeOld ? [publicKey] : [] })
+            editKeysAction(name, 'owner', owner, { add: [recovery], remove: removeOld ? [publicKey] : [] })
           )
         }
       }
@@ -1941,7 +1954,7 @@ function loginScreen(incoming) {
           out,
           (passkey, root) => {
             try {
-              const owner = publicOnly(ownerKey(root, chain, 0))
+              const owner = ownerPublicKey(root, chain, 0)
               const { publicKey, credentialId } = passkey
               replyAndClose(reply, out, { ok: true, publicKey, credentialId, account: null, owner, level: null })
             } catch (error) {
@@ -1956,7 +1969,8 @@ function loginScreen(incoming) {
           forgetRoot(root)
           added(passkey, null)
         })
-  const findOther = () => findKeyFlow(out, added)
+  const ownerOn = create ? chain : null
+  const findOther = () => findKeyFlow(out, added, { ownerOn })
 
   // No key cached here — usually a new device the passkey synced to, so lead with
   // signing in and offer a new key only if none came back. WebAuthn doesn't tell
@@ -1981,9 +1995,12 @@ function loginScreen(incoming) {
       })
 
     const lookup = () =>
-      findKeyFlow(out, added, (error) => {
-        first(true)
-        out.replaceChildren(...(error?.name === 'NotAllowedError' ? [] : [failure(error)]))
+      findKeyFlow(out, added, {
+        ownerOn,
+        onFail: (error) => {
+          first(true)
+          out.replaceChildren(...(error?.name === 'NotAllowedError' ? [] : [failure(error)]))
+        },
       })
 
     first(false)
@@ -2108,12 +2125,13 @@ function handKeysScreen({ passkey, owner, from, reply, back }) {
   const out = stack([])
   const redraw = () => handKeysScreen({ passkey, owner, from, reply, back })
 
-  // A passkey from before may already own accounts through its root: the next free slot.
+  // Normally `findKeyFlow` brings the owner from its own touch; this runs only when a node
+  // did not answer then. A passkey from before may own accounts through its root: the next free slot.
   const deriveOwner = async () => {
     out.replaceChildren(status('Confirm with your passkey — picking the owner key'))
     const root = await rootFromPasskey(passkey)
     try {
-      return publicOnly(await nextFreeIndex(root, chain))
+      return (await nextFreeIndex(root, chain)).publicKey
     } finally {
       forgetRoot(root)
     }

@@ -66,7 +66,7 @@ export function forgetRoot(root) {
 export const ownerPath = (chain, index) => `m/44'/${chain.slip44}'/${index}'/0/0`
 
 // K1, so Anchor, cleos and any wallet accept it: recovery is worth only what works outside.
-export function ownerKey(root, chain, index) {
+function ownerKey(root, chain, index) {
   const node = root.master.derive(ownerPath(chain, index))
   const privateKey = new PrivateKey(KeyType.K1, Bytes.from(node.privateKey))
 
@@ -74,10 +74,13 @@ export function ownerKey(root, chain, index) {
 }
 
 // For handing a key out: the private half is wiped, the public one returned.
-export function publicOnly(key) {
+function publicOnly(key) {
   key.privateKey.data.array.fill(0)
   return key.publicKey
 }
+
+// A slot's key for putting on chain, not for signing: the private half never leaves.
+export const ownerPublicKey = (root, chain, index) => publicOnly(ownerKey(root, chain, index))
 
 /**
  * Every account of the root: slots in order on each network, until GAP empty in a row.
@@ -111,7 +114,10 @@ async function scanChain(root, chain) {
     const accounts = await accountsForKey(chain, key.publicKey)
 
     if (accounts.length) empty = 0
-    else empty++
+    else {
+      empty++
+      key.privateKey.data.array.fill(0)
+    }
 
     found.push(...accounts.map((account) => ({ ...account, chain, key })))
   }
@@ -136,9 +142,10 @@ export function ownerKeyOf(root, chain, publicKey) {
 }
 
 // First slot with no account: a used slot would tie two accounts to one key.
+// Public half only: a free slot is for handing out, nothing signs with it yet.
 export async function nextFreeIndex(root, chain) {
   for (let index = 0; ; index++) {
-    const key = ownerKey(root, chain, index)
-    if (!(await accountsForKey(chain, key.publicKey)).length) return key
+    const publicKey = ownerPublicKey(root, chain, index)
+    if (!(await accountsForKey(chain, publicKey)).length) return { index, publicKey }
   }
 }
