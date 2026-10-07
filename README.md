@@ -152,6 +152,7 @@ public/
   styles.css         ВСЕ стили: токены, ритм отступов, компоненты
   signer-mark.svg    знак Alcor Signer: кристалл Alcor с замком
   chains/            логотипы сетей, путь в реестре (`chain.logo`)
+  llms.txt           что такое Signer — для LLM; интеграцию допишем с плагином WharfKit
   ui.js              кирпичики интерфейса: el, card, tile, state, toggle, banner…
   app.js             экраны и их состав
   chain.js           реестр сетей и список разрешённых origin приложения

@@ -1,0 +1,53 @@
+# Alcor Signer
+
+> Alcor Signer (sign.alcor.exchange) is a passkey wallet for Antelope networks — Telos, WAX and XPR Network. It lives on its own origin, holds the keys and signs transactions for Alcor Exchange apps, so the trading app itself never holds a key. No extension, no app to install, no seed phrase to type in: a passkey on the device (Face ID, Touch ID, Windows Hello, Android fingerprint, a security key) is the wallet.
+
+The site is a static page with no backend, no build step and no third-party code. Everything it shows is read from the chain; everything it stores in the browser is a cache that can be rebuilt from the passkey.
+
+## What it does
+
+- **Create a key.** A passkey is created for `sign.alcor.exchange`. On Antelope it becomes a native `PUB_WA_` key: the chain itself checks the WebAuthn signature and the site it was made for.
+- **Recovery phrase.** The same passkey derives 24 words (BIP-39, through the WebAuthn PRF extension). The words give owner keys on every network (BIP-32/44) and bring the accounts back if the passkey is lost. The words are deterministic: the same passkey always gives the same words. To get new words, the passkey itself is replaced.
+- **Find accounts.** Accounts are found on-chain by key, on all networks at once. A new device needs no server: the public key is recovered from the passkey's own signature.
+- **Bring an existing account.** Import with a private key (the passkey is added to the account; the old key can be removed), or link from another wallet by adding the passkey to the account's permission.
+- **Export.** The owner key of an account derived from the 24 words can be exported as WIF for Anchor or cleos. The passkey itself can't be exported by anything, and Fast sign keys are never exported.
+- **Sign.** An app sends actions, and Alcor Signer shows what the transaction does and signs it.
+
+## Signing modes
+
+Each account has one mode per browser:
+
+- **Passkey** — every signature needs the device (Face ID or the like).
+- **Fast** — a browser key added to the account's `active` permission. Signs with a button in the Alcor Signer window, no Face ID. The key is a non-extractable WebCrypto key, derived again from the passkey if the browser data is cleared.
+- **Auto** — Alcor trades (swaps, limit orders, liquidity, staking on Alcor contracts) are signed at once, without a window. Anything else opens the window as in Fast. A trade with no minimum to receive, an unknown memo or a recipient other than the signer always opens the window.
+
+Permission changes (`updateauth`, `linkauth` and the like, `setcode`, `setabi`, any `eosio.msig` action) are never accepted from an app. They are started only inside Alcor Signer and always signed with the passkey.
+
+## How it protects the user
+
+- **Separate origin.** A passkey works only on the site it was made for. Malicious code on the trading app can't sign anything with it — the browser won't hand it out there, and the chain checks the site name inside every signature.
+- **What you see is what you sign.** The app sends only actions. Alcor Signer builds the transaction itself (network ID, reference block, expiration) from its own node list, decodes it back and draws the screen from the decoded transaction, not from the request.
+- **Fixed networks.** The app only names a network. Nodes and chain IDs are hardcoded; a node that reports another chain ID is a refusal.
+- **Checked ABIs.** Contract ABIs are pinned by hash. An ABI that doesn't match must be confirmed by a second node, and then the screen shows a warning.
+- **Readable summary.** Swaps, orders, transfers, bridge moves and staking are shown in plain words. Missing minimums, foreign recipients and unknown memos get red and yellow warnings that are never hidden.
+- **Strict headers.** CSP without inline code, Trusted Types, `connect-src` only to the listed nodes, framing allowed only for Alcor's own app.
+- **Clicks, not keys.** A signature takes a click on the button after the screen is shown. No hotkeys, no autofocus on the sign button, and the button ignores clicks right after the window gets focus.
+
+## Networks
+
+- Telos
+- WAX
+- XPR Network
+
+All three share one passkey and one recovery phrase. EVM networks are planned through keys derived from the same 24 words.
+
+## Who can use it
+
+Right now Alcor Signer answers only Alcor Exchange apps: `alcor.exchange` and its network subdomains. A request from any other site is ignored.
+
+Integration for other dApps is planned as a WharfKit wallet plugin. It is not available yet, and this file will describe it when it is.
+
+## Links
+
+- [Alcor Signer](https://sign.alcor.exchange): the wallet
+- [Alcor Exchange](https://alcor.exchange): the DEX that uses it
