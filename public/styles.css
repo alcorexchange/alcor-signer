@@ -864,6 +864,15 @@ button.secret-copy.done { color: var(--primary); border-color: var(--primary-lin
 .word-grid li::marker { color: var(--text-faint); font-size: 10.5px; }
 .word-grid .word { overflow-wrap: anywhere; }
 
+.secret-key {
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text);
+  word-break: break-all;
+  user-select: all;
+}
+
 /* ── input ──────────────────────────────────────────────── */
 
 .field-input {

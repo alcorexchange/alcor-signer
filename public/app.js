@@ -52,6 +52,7 @@ import {
   steps,
   tile,
   secretInput,
+  secretKey,
   stack,
   switchRow,
   wordGrid,
@@ -602,6 +603,7 @@ function accountRow(entry) {
             onState: (level) =>
               fast.replaceChildren(...(level === 'passkey' ? [] : [chip(level === 'auto' ? 'Auto' : 'Fast', LEVEL_ICON[level], LEVEL_TONE[level])])),
             onRemove: () => unlinkScreen(entry),
+            onExport: () => exportKeyScreen(entry),
           }),
         ]),
       ]),
@@ -645,6 +647,76 @@ async function unlinkPlan(entry) {
     // The passkey signs the updateauth alone, so it needs the whole threshold.
     canSign: weightOf(entry.passkey.publicKey) >= auth.threshold,
   }
+}
+
+/**
+ * The account's owner key from the 24 words, as a plain private key for Anchor, cleos or
+ * any wallet. Only that key: a passkey and a Fast sign key never leave the device. The
+ * owner is read from nodes that agree; the key is derived here and matched against it.
+ */
+function exportKeyScreen(entry) {
+  const title = 'Export private key'
+  const sub = `${entry.name} · ${entry.chain.name}`
+  const step = stack([])
+  const out = stack([])
+
+  // The key on screen, if any: every way out zeroes it. The WIF string itself can't be.
+  let shown = null
+  const forget = () => {
+    shown?.privateKey.data.array.fill(0)
+    shown = null
+  }
+  const leave = () => {
+    forget()
+    homeScreen()
+  }
+  const draw = (actions) => screen({ body: [pageTitle(title, sub), step, out], actions, back: leave })
+
+  async function reveal() {
+    out.replaceChildren(status('Checking who owns the account'))
+
+    let root = null
+    try {
+      const owner = await agreedAuthority(entry.chain, entry.name, 'owner')
+      out.replaceChildren(status(`Waiting for ${passkeyLabel(entry.passkey)}`))
+      root = await rootFromPasskey(entry.passkey)
+
+      const key = (owner?.keys ?? []).map((onChain) => ownerKeyOf(root, entry.chain, onChain.key)).find(Boolean) ?? null
+      if (!key) {
+        out.replaceChildren(
+          banner(
+            'warn',
+            `The owner of ${entry.name} is not a key from your 24 words, so there is none to export. ` +
+              'If Recovery phrase lists it as “not covered yet”, cover it there first.'
+          )
+        )
+        return
+      }
+
+      shown = key
+      forgetOnHome(forget)
+      out.replaceChildren()
+      step.replaceChildren(
+        banner('danger', `Anyone with this key owns ${entry.name}. Never paste it into a website and never send it to anyone.`),
+        secretKey(key.privateKey.toWif()),
+        card([field('owner public key', mono(key.publicKey))]),
+        note('The classic format starting with 5 — Anchor, cleos and other wallets accept it.')
+      )
+      draw([button('Done', leave, 'primary')])
+    } catch (error) {
+      out.replaceChildren(failure(error))
+    } finally {
+      forgetRoot(root)
+    }
+  }
+
+  step.replaceChildren(
+    card([
+      tile({ icon: ICONS.key, title: 'The owner key of this account', sub: 'For Anchor, cleos or any Antelope wallet' }),
+      tile({ icon: ICONS.alert, tone: 'amber', title: 'Full control of the account', sub: 'Whoever has it can move everything and change every key' }),
+    ])
+  )
+  draw([button('Show with passkey', reveal, 'primary')])
 }
 
 // Unlink lives only here: the vault never accepts permission changes from the app.
@@ -811,16 +883,18 @@ const LEVEL_TEXT = {
   auto: 'Advanced · Alcor trades sign right away, anything else asks here',
 }
 
-function signingPanel(entry, { onState, onRemove }) {
+function signingPanel(entry, { onState, onRemove, onExport }) {
   const box = el('div', { className: 'level' })
   const out = stack([], { tight: true })
   const remove = () => (onRemove ? inlineAction('Remove passkey', ICONS.ban, onRemove, 'quiet') : null)
+  // Home only: a window the app opened never offers a key out.
+  const exporter = () => (onExport ? inlineAction('Export private key', ICONS.key, onExport) : null)
 
   // A browser key on owner would make the browser the account's owner.
   if (entry.permission !== entry.chain.permission) {
     box.replaceChildren(
       el('p', { className: 'level-text', textContent: `Passkey only — it is on ${entry.permission}, apps sign with ${entry.chain.permission}` }),
-      el('div', { className: 'level-actions' }, [remove()])
+      el('div', { className: 'level-actions' }, [exporter(), remove()])
     )
     return box
   }
@@ -845,6 +919,7 @@ function signingPanel(entry, { onState, onRemove }) {
         ? null
         : el('div', { className: 'level-actions' }, [
             level !== 'passkey' ? inlineAction('Replace browser key', ICONS.swap, () => rotate()) : null,
+            exporter(),
             remove(),
           ]),
     )

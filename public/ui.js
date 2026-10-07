@@ -602,6 +602,10 @@ export const wordGrid = (words) =>
 // browser that allows writes only on a gesture refuses, and clipboard history is out of reach.
 const CLIPBOARD_MS = 60_000
 
+// One private key, shown like the words: selectable as a whole, copied with the same clearing.
+export const secretKey = (value) =>
+  el('div', { className: 'secret' }, [el('div', { className: 'secret-key', textContent: value }), copyButton(value)])
+
 function copyButton(value) {
   const copy = el('button', { className: 'secret-copy', type: 'button' }, [
     icon(ICONS.copy, 13),

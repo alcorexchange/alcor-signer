@@ -300,6 +300,7 @@ yarn vendor    # перепроверка: собрать заново и све
 | после создания | `newAccountScreen` | owner и active для ручного создания аккаунта в каждой сети |
 | «Recovery phrase» | `withPickedPasskey` → `phraseScreen` | при нескольких passkey — сначала выбор ключа (имя и его аккаунты); слова по касанию passkey; какие аккаунты они вернут; поставить слова на owner, где можно |
 | «Import with a private key» | `importScreen` → `importConfirm` | сеть сегментами, ключ; аккаунты галками, тумблеры «Fast sign» и «Remove the old key» (§6a) |
+| «Export private key» (панель аккаунта на главной) | `exportKeyScreen` | owner-ключ аккаунта из 24 слов в WIF (`5…`) для Anchor и cleos, по касанию passkey; owner сверяется по двум нодам. Не из слов — экспортировать нечего, так и сказано. Passkey и Fast sign ключ не экспортируются никогда; из окна app пункта нет |
 | «Replace passkey» | `withPickedPasskey` → `replaceKeyScreen` | при нескольких passkey — сначала выбор ключа; экран называет заменяемый ключ, его аккаунты и порядок окон passkey; новый ключ и новые слова, переезд аккаунтов этого ключа (§8) |
 | «Restore with recovery phrase» | `restoreScreen` | 24 слова → аккаунты → новый ключ → переезд (§8) |
 | из app, `kind: 'login'` | `loginScreen` | выбор аккаунта, другой passkey (любой ключ этого origin, не только с другого устройства), создание; отдаёт публичный ключ, выбранный аккаунт и его режим подписи, ничего не подписывает |
