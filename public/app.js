@@ -291,7 +291,7 @@ function welcomeScreen({ then = (passkey, root) => newAccountScreen(passkey, roo
       ),
     ],
     links: [
-      ['I have a key on another device', () => findKeyFlow(out, () => homeScreen())],
+      ['Use another passkey', () => findKeyFlow(out, () => homeScreen())],
       ['Restore with 24 words', () => restoreScreen()],
     ],
   })
@@ -2294,8 +2294,8 @@ function loginScreen(incoming) {
           options([
             tile({
               icon: ICONS.phone,
-              title: 'Use a key from another device',
-              sub: 'A synced passkey, or scan with your phone',
+              title: 'Use another passkey',
+              sub: 'Another key on this device, a synced one, or scan with your phone',
               aside: icon(ICONS.chevron, 14),
               onclick: findOther,
             }),
@@ -2625,7 +2625,7 @@ function enrollScreen({ request, reply }) {
     screen({
       body: [...intro, fastRow ? card([fastRow]) : null, recoveryNote, out],
       actions: [button('Create a passkey', createNew, 'primary')],
-      links: [['I have a key on another device', findOther], cancel],
+      links: [['Use another passkey', findOther], cancel],
     })
 
   const [primary, ...others] = passkeys
@@ -2647,8 +2647,8 @@ function enrollScreen({ request, reply }) {
           options([
             tile({
               icon: ICONS.phone,
-              title: 'Use a key from another device',
-              sub: 'A synced passkey, or scan with your phone',
+              title: 'Use another passkey',
+              sub: 'Another key on this device, a synced one, or scan with your phone',
               aside: icon(ICONS.chevron, 14),
               onclick: findOther,
             }),
