@@ -76,6 +76,7 @@ import {
 } from './session.js'
 import { k1PublicKey } from './k1.js'
 import {
+  forgetFoundKeys,
   forgetRoot,
   nextFreeIndex,
   ownerKeyOf,
@@ -1250,6 +1251,7 @@ function phraseScreen(passkey, { back = homeScreen, done: finish = back, confirm
 async function coverageSection(passkey, root, out) {
   const [entries, covered] = await Promise.all([findAccounts([passkey]), rootAccounts(root)])
   const recoverable = new Set(covered.accounts.map((entry) => `${entry.chain.chainId}:${entry.name}`))
+  forgetFoundKeys(covered.accounts)
 
   const coveredRow = (entry) =>
     tile({ icon: ICONS.check, tone: 'mint', title: entry.name, sub: `${entry.chain.name} · comes back with these words` })
@@ -1475,17 +1477,26 @@ function confirmMove(passkey, next, newRoot) {
       forgetRoot(newRoot)
       homeScreen()
     },
+    // The old root and its keys go on every way out: a retry derives them again.
+    // The new root stays for a retry until the move is done.
     run: async (work) => {
       const oldRoot = await rootFromPasskey(passkey)
-      work.replaceChildren(status('Finding your accounts'))
+      let found = []
+      let results
+      try {
+        work.replaceChildren(status('Finding your accounts'))
 
-      const [byRoot, byPasskey] = await Promise.all([rootAccounts(oldRoot), findAccounts([passkey])])
-      const accounts = mergeAccounts(byRoot.accounts, byPasskey)
+        const [byRoot, byPasskey] = await Promise.all([rootAccounts(oldRoot), findAccounts([passkey])])
+        found = byRoot.accounts
+        const accounts = mergeAccounts(found, byPasskey)
 
-      work.replaceChildren(status('Moving — your passkey may ask more than once'))
-      const results = await moveAll(accounts, { oldPasskey: passkey, newPasskey: next, newRoot })
+        work.replaceChildren(status('Moving — your passkey may ask more than once'))
+        results = await moveAll(accounts, { oldPasskey: passkey, newPasskey: next, newRoot })
+      } finally {
+        forgetFoundKeys(found)
+        forgetRoot(oldRoot)
+      }
 
-      forgetRoot(oldRoot)
       forgetRoot(newRoot)
       if (results.every((result) => !result.error)) forgetPasskey(passkey.publicKey)
 
@@ -1533,11 +1544,20 @@ function restoreScreen() {
     input.value = ''
     out.replaceChildren(status('Looking on every network'))
 
+    // The found keys sign the move, so they go wherever the old root goes.
+    let accounts = []
+    const forgetOld = () => {
+      forgetFoundKeys(accounts)
+      forgetRoot(oldRoot)
+    }
+
     try {
-      const { accounts, failed } = await rootAccounts(oldRoot)
+      const found = await rootAccounts(oldRoot)
+      accounts = found.accounts
+      const { failed } = found
 
       if (!accounts.length) {
-        forgetRoot(oldRoot)
+        forgetOld()
         out.replaceChildren(
           banner('warn', 'These words own no account yet.'),
           ...failed.map((name) => banner('warn', `${name} did not answer — try again later.`))
@@ -1561,13 +1581,13 @@ function restoreScreen() {
                   title: 'Moving your accounts',
                   busy: 'Signing with the old words',
                   back: () => {
-                    forgetRoot(oldRoot)
+                    forgetOld()
                     forgetRoot(newRoot)
                     homeScreen()
                   },
                   run: async () => {
                     const results = await moveAll(accounts, { newPasskey: next, newRoot })
-                    forgetRoot(oldRoot)
+                    forgetOld()
                     forgetRoot(newRoot)
                     screen({
                       body: [pageTitle('Restored', 'Your accounts now use the new key'), moveReport(results)],
@@ -1583,14 +1603,14 @@ function restoreScreen() {
           [
             'Cancel',
             () => {
-              forgetRoot(oldRoot)
+              forgetOld()
               homeScreen()
             },
           ],
         ],
       })
     } catch (error) {
-      forgetRoot(oldRoot)
+      forgetOld()
       out.replaceChildren(failure(error))
     }
   }

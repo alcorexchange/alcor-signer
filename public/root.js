@@ -62,6 +62,11 @@ export function forgetRoot(root) {
   root?.words.fill('')
 }
 
+// Owner keys `rootAccounts` found: they sign moves, so they live as long as their root.
+export function forgetFoundKeys(accounts) {
+  for (const entry of accounts) entry.key?.privateKey.data.array.fill(0)
+}
+
 // All upper levels are hardened.
 export const ownerPath = (chain, index) => `m/44'/${chain.slip44}'/${index}'/0/0`
 
