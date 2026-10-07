@@ -34,9 +34,16 @@ const GAP = 5
  * @typedef {{ words: string[], master: HDKey }} Root
  */
 
+// Takes the secret over: it and the seed are zeroed once the master key exists.
 export function rootFromSecret(secret) {
   const words = entropyToMnemonic(secret, englishWordlist).split(' ')
-  return { words, master: HDKey.fromMasterSeed(mnemonicToSeedSync(words.join(' '))) }
+  const seed = mnemonicToSeedSync(words.join(' '))
+  try {
+    return { words, master: HDKey.fromMasterSeed(seed) }
+  } finally {
+    seed.fill(0)
+    secret.fill(0)
+  }
 }
 
 export async function rootFromPasskey(passkey) {

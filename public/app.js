@@ -9,6 +9,7 @@
 import {
   ICONS,
   accent,
+  accountTag,
   actionBar,
   avatar,
   banner,
@@ -60,7 +61,17 @@ import { explain } from './errors.js'
 import { formatBalance } from './format.js'
 import { accountId, cachedAccounts, cachedValue, rememberAccounts, rememberValue } from './cache.js'
 import { awaitRequest, isEmbedded, serveEmbedded } from './protocol.js'
-import { findPasskey, forgetPasskey, loadPasskeys, makePasskey, rememberPasskey } from './keys.js'
+import {
+  findPasskey,
+  forgetMove,
+  forgetPasskey,
+  loadPasskeys,
+  makePasskey,
+  passkeyLabel,
+  pendingMoveOf,
+  rememberMove,
+  rememberPasskey,
+} from './keys.js'
 import {
   HOT_KEY_SLOTS,
   adoptHotKey,
@@ -75,6 +86,7 @@ import {
   setAutoSign,
 } from './session.js'
 import { k1PublicKey } from './k1.js'
+import { isPasskeyOf } from './webauthn.js'
 import {
   forgetFoundKeys,
   forgetRoot,
@@ -123,7 +135,12 @@ addEventListener(
   { passive: true }
 )
 
+// Bumped by every screen: work that finishes late checks it, so a result never draws
+// over a screen the person has already moved on from.
+let screens = 0
+
 function screen({ body, actions = [], links = [], back }) {
+  screens++
   const buttons = actions.filter(Boolean)
   const small = links.filter(Boolean)
   const content = body.filter(Boolean)
@@ -230,13 +247,18 @@ const shortKey = (key) => `${key.slice(0, 16)}…${key.slice(-6)}`
 
 // ─────────────────────────────────────────────── accounts
 
+// Secrets a screen holds until the person leaves it. Every way out ends at home — the
+// logo too, which skips a flow's own Back and Cancel — so home wipes them.
+const onHome = []
+const forgetOnHome = (forget) => onHome.push(forget)
+
 async function homeScreen() {
+  for (const forget of onHome.splice(0)) forget()
+
   const passkeys = loadPasskeys()
   if (!passkeys.length) return welcomeScreen()
 
-  const primary = passkeys[0]
-
-  screen({ body: [accountsSection(passkeys), securitySection(primary), techDetails(primary)] })
+  screen({ body: [accountsSection(passkeys), securitySection(passkeys), techDetails(passkeys)] })
 }
 
 function welcomeScreen({ then = (passkey, root) => newAccountScreen(passkey, root) } = {}) {
@@ -278,7 +300,13 @@ function welcomeScreen({ then = (passkey, root) => newAccountScreen(passkey, roo
 // Two prompts: create the key, then derive the root. Without PRF nothing is cached (ADR-0010 §2).
 // `words: false` — an app opening an account with its first deposit asks for the words
 // once the account holds something (`backup`); the root is the same whenever it is derived.
+// One passkey prompt at a time: a second click while the first waits would start another
+// prompt and overwrite the first one's status with its error. Released before `then`.
+let prompting = false
+
 async function createKeyFlow(out, then, { words = true } = {}) {
+  if (prompting) return
+  prompting = true
   out.replaceChildren(status('Creating the key — confirm with your passkey'))
 
   try {
@@ -286,12 +314,16 @@ async function createKeyFlow(out, then, { words = true } = {}) {
     out.replaceChildren(status(words ? 'One more confirmation — deriving your recovery phrase' : 'One more confirmation — deriving your keys'))
 
     const root = await rootFromPasskey(created)
+    forgetOnHome(() => forgetRoot(root))
     const passkey = rememberPasskey({ ...created, prf: true })
 
+    prompting = false
     if (words) wordsScreen(root, { next: () => then(passkey, root) })
     else then(passkey, root)
   } catch (error) {
     out.replaceChildren(failure(error))
+  } finally {
+    prompting = false
   }
 }
 
@@ -299,6 +331,8 @@ async function createKeyFlow(out, then, { words = true } = {}) {
 // touch, while the root is still here. A node that does not answer gives null, and the
 // owner costs one more touch later.
 async function findKeyFlow(out, then, { onFail = (error) => out.replaceChildren(failure(error)), ownerOn = null } = {}) {
+  if (prompting) return
+  prompting = true
   out.replaceChildren(status('Pick your key — confirm with your passkey'))
 
   let root = null
@@ -312,10 +346,12 @@ async function findKeyFlow(out, then, { onFail = (error) => out.replaceChildren(
       owner = await nextFreeIndex(root, ownerOn).then((free) => free.publicKey, () => null)
     }
 
+    prompting = false
     then(rememberPasskey(found.passkey), owner)
   } catch (error) {
     onFail(error)
   } finally {
+    prompting = false
     forgetRoot(root)
   }
 }
@@ -331,7 +367,7 @@ function wordsScreen(root, { title = 'Your recovery phrase', sub, next }) {
       banner('danger', 'Anyone with these words owns your accounts. Never type them into a website and never send them to anyone.'),
       wordGrid(root.words),
       consequences([
-        'The same 24 words work for every account and every network here.',
+        'One set of 24 words for every account of this passkey, on every network.',
         'Alcor keeps no copy. Your passkey can show them again at any time.',
         'Lose the passkey and these words are the only way back.',
       ]),
@@ -345,6 +381,7 @@ function wordsScreen(root, { title = 'Your recovery phrase', sub, next }) {
 // The owner index is the first free one: a used index would share a key between accounts.
 function newAccountScreen(passkey, root) {
   const rows = stack([status('Picking keys for each network')])
+  forgetOnHome(() => forgetRoot(root))
 
   screen({
     body: [
@@ -380,7 +417,8 @@ function newAccountScreen(passkey, root) {
 function accountsSection(passkeys) {
   const primary = passkeys[0]
   const count = el('span', { className: 'list-count' })
-  const add = button('', () => addAccountScreen(primary), 'accent')
+  // The imported account gets this passkey and an owner key from its words: picked, never implied.
+  const add = button('', () => withPickedPasskey(passkeys, 'Import wallet', (passkey) => addAccountScreen(passkey)), 'accent')
   add.replaceChildren(icon(ICONS.plus, 12), el('span', { textContent: 'Import wallet' }))
 
   const body = el('div', { className: 'stack chain-list' })
@@ -406,7 +444,7 @@ function accountsSection(passkeys) {
 
     const openId = body.querySelector('.acct.open')?.dataset.id
     body.replaceChildren(...byChain(entries).map(([network, group]) => chainGroup(network, group)))
-    const reopen = openId ? body.querySelector(`.acct[data-id="${openId}"]`) : entries.length === 1 ? body.querySelector('.acct') : null
+    const reopen = openId ? body.querySelector(`.acct[data-id="${CSS.escape(openId)}"]`) : entries.length === 1 ? body.querySelector('.acct') : null
     if (reopen) setOpen(reopen, true)
   }
 
@@ -617,9 +655,11 @@ function unlinkScreen(entry) {
   const back = () => homeScreen()
 
   screen({ body: [pageTitle(title, sub), body], back })
+  const ticket = screens
 
   unlinkPlan(entry)
     .then((plan) => {
+      if (screens !== ticket) return
       if (plan.locks) {
         body.replaceChildren(
           state({
@@ -647,8 +687,8 @@ function unlinkScreen(entry) {
       body.replaceChildren(
         consequences([
           plan.staysOnOwner
-            ? `This device stops signing on ${entry.permission}. Your passkey stays on owner and can still take the account back.`
-            : `This device stops signing for ${entry.name}.`,
+            ? `This passkey stops signing on ${entry.permission}, on every device it syncs to. It stays on owner and can still take the account back.`
+            : `This passkey stops signing for ${entry.name}, on every device it syncs to.`,
           plan.hot ? 'Fast sign in this browser is turned off.' : null,
           'Every other key stays as it is.',
         ].filter(Boolean)),
@@ -668,6 +708,7 @@ function unlinkScreen(entry) {
       })
     })
     .catch((error) => {
+      if (screens !== ticket) return
       body.replaceChildren(failure(error))
       screen({
         body: [pageTitle(title, sub), body],
@@ -691,11 +732,17 @@ function unlink(entry, plan) {
     busy: 'Removing — confirm with your passkey',
     back: () => homeScreen(),
     run: async () => {
-      // The unlink screen already listed what stays.
+      // The unlink screen listed what stays, so the account must still be exactly that:
+      // `updateauth` rewrites the whole permission and would bring back a key removed since.
+      const fresh = await unlinkPlan(entry)
+      if (JSON.stringify(fresh.auth) !== JSON.stringify(plan.auth) || fresh.locks || !fresh.canSign) {
+        throw new Error('The account changed since this screen opened. Nothing was signed — open it again to see what stays.')
+      }
+
       const txid = await submit(
         entry.chain,
         entry.passkey,
-        [editKeysAction(entry.name, entry.permission, plan.auth, { remove: plan.remove })],
+        [editKeysAction(entry.name, entry.permission, fresh.auth, { remove: fresh.remove })],
         { review: false }
       )
       await forgetHotKey(scopeOfEntry(entry))
@@ -917,9 +964,17 @@ async function signingLevel(entry) {
   return key.auto ? 'auto' : 'fast'
 }
 
-// Random, so re-enabling after a theft doesn't bring the stolen key back; recovery checks every slot.
-function randomSlot(except) {
-  const free = [...Array(HOT_KEY_SLOTS).keys()].filter((n) => n !== except)
+// Slots taken off the account stay off in this browser: re-enabling after a theft must
+// not bring the stolen key back. Slot numbers only — nothing here can sign.
+const slotsId = (scope) => `${scope.chainId}:${scope.account}@${scope.permission}`
+const retiredSlots = (scope) => cachedValue('retired', slotsId(scope)) ?? []
+const retireSlot = (scope, n) => rememberValue('retired', slotsId(scope), [...new Set([...retiredSlots(scope), n])])
+
+// Random, never a retired one while any other is left; recovery checks every slot.
+function randomSlot(scope, except = null) {
+  const all = [...Array(HOT_KEY_SLOTS).keys()].filter((n) => n !== except)
+  const fresh = all.filter((n) => !retiredSlots(scope).includes(n))
+  const free = fresh.length ? fresh : all
   return free[crypto.getRandomValues(new Uint32Array(1))[0] % free.length]
 }
 
@@ -956,7 +1011,7 @@ async function enableFastSign(entry, derived = null) {
       return null
     }
 
-    const next = candidates[randomSlot()]
+    const next = candidates[randomSlot(scope)]
     const txid = await submit(
       entry.chain,
       entry.passkey,
@@ -981,14 +1036,18 @@ async function rotateFastSign(entry) {
   const secret = await hotSecret(entry.passkey, scope)
 
   try {
-    const next = (await hotCandidates(secret))[randomSlot(current.n)]
+    const next = (await hotCandidates(secret))[randomSlot(scope, current.n)]
+    // Every Fast sign key goes, not only the one this browser remembers: a slot left
+    // from an earlier failure or another browser would keep working after "replaced".
+    const stale = unique([current.publicKey, ...keysOn(auth).filter(isFastSignKey)])
     const txid = await submit(
       entry.chain,
       entry.passkey,
-      [editKeysAction(entry.name, entry.permission, auth, { add: [next.publicKey], remove: [current.publicKey] })],
+      [editKeysAction(entry.name, entry.permission, auth, { add: [next.publicKey], remove: stale })],
       { known: [next.publicKey] }
     )
 
+    retireSlot(scope, current.n)
     await adoptHotKey(secret, scope, next.n, { keepAuto: true })
     return txid
   } finally {
@@ -1002,14 +1061,17 @@ async function disableFastSign(entry) {
   const key = await loadHotKey(scope)
   const auth = key ? await agreedAuthority(entry.chain, entry.name, entry.permission) : null
 
+  // Every Fast sign key on the permission, not only this browser's: "every signature asks
+  // for your passkey" must hold for a slot left behind by a failure or another browser.
+  const stale = keysOn(auth).filter(isFastSignKey)
+
   let txid = null
-  if (key && auth?.keys.some((candidate) => candidate.key === key.publicKey)) {
-    txid = await submit(entry.chain, entry.passkey, [
-      editKeysAction(entry.name, entry.permission, auth, { remove: [key.publicKey] }),
-    ])
+  if (stale.length) {
+    txid = await submit(entry.chain, entry.passkey, [editKeysAction(entry.name, entry.permission, auth, { remove: stale })])
   }
 
   // Forget it here either way: a key off the account but still in the browser looks usable.
+  if (key) retireSlot(scope, key.n)
   await forgetHotKey(scope)
   return txid
 }
@@ -1095,23 +1157,86 @@ const submit = (on, passkey, actions, options) => submitWith(on, withPasskey(pas
 
 // ─────────────────────────────────────────────── keys
 
-const securitySection = (passkey) =>
+// Words and replacement belong to one passkey: with several on this device the person
+// picks it, never the first one in the cache.
+const securitySection = (passkeys) =>
   section('security', [
     options([
+      // A replace that stopped halfway stays in sight until it is finished.
+      ...passkeys.flatMap((passkey) => {
+        const next = pendingMoveOf(passkey)
+        return next
+          ? [
+              tile({
+                icon: ICONS.alert,
+                tone: 'amber',
+                title: 'Finish moving',
+                sub: `Some accounts are still on ${passkeyLabel(passkey)}`,
+                aside: icon(ICONS.chevron, 14),
+                onclick: () => finishMoveScreen(passkey, next),
+              }),
+            ]
+          : []
+      }),
       tile({
         icon: ICONS.download,
         title: 'Recovery phrase',
         aside: icon(ICONS.chevron, 14),
-        onclick: () => phraseScreen(passkey),
+        onclick: () => withPickedPasskey(passkeys, 'Recovery phrase', (passkey, back) => phraseScreen(passkey, { back, done: homeScreen })),
       }),
       tile({
         icon: ICONS.swap,
         title: 'Replace passkey',
         aside: icon(ICONS.chevron, 14),
-        onclick: () => replaceKeyScreen(passkey),
+        onclick: () => withPickedPasskey(passkeys, 'Replace passkey', (passkey, back) => replaceKeyScreen(passkey, { back })),
       }),
     ]),
   ])
+
+function withPickedPasskey(passkeys, title, then, { back = homeScreen } = {}) {
+  if (passkeys.length === 1) return then(passkeys[0], back)
+
+  const pick = () =>
+    screen({
+      body: [
+        pageTitle(title, 'Which passkey?'),
+        card(
+          passkeys.map((passkey) =>
+            tile({
+              icon: ICONS.key,
+              title: passkeyLabel(passkey),
+              sub: accountsLine(passkey),
+              aside: icon(ICONS.chevron, 14),
+              onclick: () => then(passkey, pick),
+            })
+          )
+        ),
+      ],
+      back: () => back(),
+    })
+
+  pick()
+}
+
+// Accounts a passkey signs for, cache first, then the chain: how a person tells keys apart.
+function accountsLine(passkey) {
+  const cached = fromCache([passkey])
+  const line = el('span', { textContent: namesOf(cached) || 'Looking for accounts…' })
+  const failed = new Set()
+
+  findAccounts([passkey], failed)
+    .then((found) => {
+      const entries = [...found, ...cached.filter((entry) => failed.has(entry.chain.chainId))]
+      line.textContent = namesOf(entries) || (failed.size ? 'Some networks did not answer' : 'No accounts')
+    })
+    .catch(() => {
+      if (!cached.length) line.textContent = 'The network did not answer'
+    })
+
+  return line
+}
+
+const namesOf = (entries) => entries.map((entry) => `${entry.name} · ${entry.chain.name}`).join(', ')
 
 function addAccountScreen(passkey) {
   const out = stack([])
@@ -1150,12 +1275,18 @@ const addChoices = (passkey, out) =>
   )
 
 async function createAccountFlow(passkey, out) {
+  if (prompting) return
+  prompting = true
   out.replaceChildren(status('Confirm with passkey'))
 
   try {
-    newAccountScreen(passkey, await rootFromPasskey(passkey))
+    const root = await rootFromPasskey(passkey)
+    prompting = false
+    newAccountScreen(passkey, root)
   } catch (error) {
     out.replaceChildren(failure(error))
+  } finally {
+    prompting = false
   }
 }
 
@@ -1200,7 +1331,7 @@ function phraseScreen(passkey, { back = homeScreen, done: finish = back, confirm
   const exits = links.filter(Boolean).map(([label, go]) => [label, () => (forgetShown(), go())])
 
   const draw = (actions, back) =>
-    screen({ body: [pageTitle('Recovery phrase', 'The way back in if you lose this passkey'), step, out], actions, links: exits, back })
+    screen({ body: [pageTitle('Recovery phrase', `The way back in if you lose ${passkeyLabel(passkey)}`), step, out], actions, links: exits, back })
 
   const done = () => {
     const go = button(
@@ -1216,14 +1347,15 @@ function phraseScreen(passkey, { back = homeScreen, done: finish = back, confirm
   }
 
   async function reveal() {
-    out.replaceChildren(status('Waiting for your passkey'))
+    out.replaceChildren(status(`Waiting for ${passkeyLabel(passkey)}`))
 
+    const coverage = stack([status('Checking which accounts these words bring back')])
     try {
       const root = await rootFromPasskey(passkey)
       shown = root
+      forgetOnHome(forgetShown)
       out.replaceChildren()
 
-      const coverage = stack([status('Checking which accounts these words bring back')])
       const go = done()
       step.replaceChildren(
         banner('danger', 'Anyone with these words owns your accounts. Never type them into a website.'),
@@ -1235,6 +1367,7 @@ function phraseScreen(passkey, { back = homeScreen, done: finish = back, confirm
 
       coverage.replaceChildren(await coverageSection(passkey, root, out))
     } catch (error) {
+      coverage.replaceChildren()
       out.replaceChildren(failure(error))
     }
   }
@@ -1242,14 +1375,17 @@ function phraseScreen(passkey, { back = homeScreen, done: finish = back, confirm
   step.replaceChildren(
     card([
       tile({ icon: ICONS.eye, title: 'Derived, never stored', sub: 'Your passkey computes them on the spot. The same words every time' }),
-      tile({ icon: ICONS.key, tone: 'mint', title: 'One phrase for everything', sub: 'Every account and every network here' }),
+      tile({ icon: ICONS.key, tone: 'mint', title: 'One phrase for this passkey', sub: 'Every account of it, on every network' }),
     ])
   )
   draw([button('Show with passkey', reveal, 'primary')], () => back())
 }
 
 async function coverageSection(passkey, root, out) {
-  const [entries, covered] = await Promise.all([findAccounts([passkey]), rootAccounts(root)])
+  const failed = new Set()
+  const [entries, covered] = await Promise.all([findAccounts([passkey], failed), rootAccounts(root)])
+  // A partial list would read as "nothing else to cover": say what was not asked.
+  const silent = [...new Set([...covered.failed, ...[...failed].map(chainName)])]
   const recoverable = new Set(covered.accounts.map((entry) => `${entry.chain.chainId}:${entry.name}`))
   forgetFoundKeys(covered.accounts)
 
@@ -1304,7 +1440,7 @@ async function coverageSection(passkey, root, out) {
 
   return section('what these words bring back', [
     rows.length ? card(rows) : note('No accounts yet.'),
-    ...covered.failed.map((name) => banner('warn', `${name} did not answer — its accounts are not listed.`)),
+    ...silent.map((name) => banner('warn', `${name} did not answer — its accounts are not listed.`)),
   ])
 }
 
@@ -1336,23 +1472,27 @@ async function attachRecovery(entry, allocate, out) {
   }
 }
 
+// Keys only Signer makes: passkeys of this origin and Fast sign keys (`PUB_R1_`).
+const isFastSignKey = (key) => key.startsWith('PUB_R1_')
+const isOurPasskey = (key) => isPasskeyOf(key, location.hostname)
+const keysOn = (auth) => auth?.keys.map((entry) => entry.key) ?? []
+const unique = (keys) => [...new Set(keys.filter(Boolean))]
+
 /**
  * Move an account to a new passkey and root (ADR-0010 §8), one transaction:
  *
- *   active: + new passkey; − old passkey and this browser's key
+ *   active: + new passkey; − old passkey and every Fast sign key
  *   owner:  + new root key; − old root key and old passkey
  *
- * Owner changes only when we sign as owner; a linked account (owner is another
- * wallet) only gets the new passkey on active.
+ * Fast sign keys go from every browser: they were made from the old passkey. `lost`
+ * (restore): every passkey of this origin goes too, so a lost or stolen device keeps
+ * nothing; on replace the other passkeys stay. Owner changes only when we sign as owner;
+ * a linked account (owner is another wallet) only gets the new passkey on active.
  *
- * @param {{ chain, name: string, oldOwnerKey?: object, oldPasskey?: object, newPasskey, newOwner: string }} move
+ * @param {{ chain, name: string, oldOwnerKey?: object, oldPasskey?: object, newPasskey, owners: ReturnType<typeof ownerSlots>, lost?: boolean }} move
  */
-async function moveAccount({ chain: on, name, oldOwnerKey, oldPasskey, newPasskey, newOwner }) {
-  const [owner, active, hot] = await Promise.all([
-    agreedAuthority(on, name, 'owner'),
-    agreedAuthority(on, name, 'active'),
-    loadHotKey(scopeOf(on, name, 'active')),
-  ])
+async function moveAccount({ chain: on, name, oldOwnerKey, oldPasskey, newPasskey, owners, lost = false }) {
+  const [owner, active] = await Promise.all([agreedAuthority(on, name, 'owner'), agreedAuthority(on, name, 'active')])
 
   const has = (auth, key) => Boolean(key && auth?.keys.some((entry) => entry.key === key))
   const signer = oldOwnerKey && has(owner, oldOwnerKey.publicKey)
@@ -1365,56 +1505,62 @@ async function moveAccount({ chain: on, name, oldOwnerKey, oldPasskey, newPasske
 
   if (!signer) throw new Error(`${name} on ${on.name}: nothing here can sign for it any more`)
 
+  const revoked = (key) => isFastSignKey(key) || (lost && isOurPasskey(key))
+
   const actions = [
     editKeysAction(name, 'active', active, {
       add: [newPasskey.publicKey],
-      remove: [oldPasskey?.publicKey, hot?.publicKey].filter(Boolean),
+      remove: unique([oldPasskey?.publicKey, ...keysOn(active).filter(revoked)]),
       by: signer.by,
     }),
   ]
 
-  if (signer.by === 'owner') {
+  const newOwner = signer.by === 'owner' ? await owners.peek(on) : null
+  if (newOwner) {
     actions.push(
       editKeysAction(name, 'owner', owner, {
         add: [newOwner],
-        remove: [oldOwnerKey?.publicKey, oldPasskey?.publicKey].filter(Boolean),
+        remove: unique([oldOwnerKey?.publicKey, oldPasskey?.publicKey, ...keysOn(owner).filter(revoked)]),
       })
     )
   }
 
-  const txid = await submitWith(on, signer.sign, actions, { known: [newPasskey.publicKey, newOwner] })
+  const txid = await submitWith(on, signer.sign, actions, { known: unique([newPasskey.publicKey, newOwner]) })
+  if (newOwner) owners.take(on)
   await forgetHotKeysOf(on, name)
-  return { txid, owner: signer.by === 'owner' }
+  return { txid, owner: Boolean(newOwner) }
 }
 
-// Owner indexes of the new root, counted locally: the chain index lags, and accounts
-// moved in a row would get the same one.
-function indexAllocator(known) {
+// Owner slots of the new root: in a row from the first free one, and taken only by moves
+// that landed. A gap of GAP empty slots would hide every account after it from the words.
+function ownerSlots(root) {
   const next = new Map()
-  for (const { chain: on, index } of known) next.set(on.chainId, Math.max(next.get(on.chainId) ?? 0, index + 1))
 
-  return (on, index) => {
-    if (index !== undefined) return index
-    const value = next.get(on.chainId) ?? 0
-    next.set(on.chainId, value + 1)
-    return value
+  return {
+    async peek(on) {
+      if (!next.has(on.chainId)) next.set(on.chainId, (await nextFreeIndex(root, on)).index)
+      return ownerPublicKey(root, on, next.get(on.chainId))
+    },
+    take(on) {
+      next.set(on.chainId, next.get(on.chainId) + 1)
+    },
   }
 }
 
-async function moveAll(accounts, { oldPasskey, newPasskey, newRoot }) {
-  const allocate = indexAllocator(accounts.filter((entry) => entry.key).map((entry) => ({ chain: entry.chain, index: entry.key.index })))
+async function moveAll(accounts, { oldPasskey, newPasskey, newRoot, lost = false }) {
+  const owners = ownerSlots(newRoot)
   const results = []
 
   for (const entry of accounts) {
     try {
-      const newOwner = ownerPublicKey(newRoot, entry.chain, allocate(entry.chain, entry.key?.index))
       const moved = await moveAccount({
         chain: entry.chain,
         name: entry.name,
         oldOwnerKey: entry.key,
         oldPasskey,
         newPasskey,
-        newOwner,
+        owners,
+        lost,
       })
       results.push({ entry, ...moved })
     } catch (error) {
@@ -1429,7 +1575,7 @@ function moveReport(results) {
   return card(
     results.map(({ entry, txid, owner, error }) =>
       error
-        ? tile({ icon: ICONS.alert, tone: 'red', title: entry.name, sub: `${entry.chain.name} · ${explain(error).title}` })
+        ? tile({ icon: ICONS.alert, tone: 'red', title: entry.name, sub: `${entry.chain.name} · not moved · ${explain(error).title}` })
         : tile({
             icon: ICONS.check,
             tone: 'mint',
@@ -1441,18 +1587,56 @@ function moveReport(results) {
   )
 }
 
-function replaceKeyScreen(passkey) {
-  const out = stack([])
+/**
+ * The end of a move. The headline says what happened: while anything is left, the old
+ * passkey and words are still needed, and `retry` moves the rest to the same new key.
+ *
+ * @param {{ title: string, results: object[], skipped?: string[], retry: () => unknown, later?: string, done: () => unknown }} move
+ */
+function moveResult({ title, results, skipped = [], retry, later = null, done }) {
+  const failed = results.some((result) => result.error)
+  const complete = !failed && !skipped.length
 
   screen({
     body: [
-      pageTitle('Replace passkey', 'Every account moves to a new key and new words'),
+      complete
+        ? pageTitle(title, 'Your accounts now use the new key')
+        : pageTitle('Not everything moved', 'Some accounts still use the old key and the old words'),
+      complete ? null : banner('danger', 'Keep the old words and the old passkey until every account has moved.'),
+      ...skipped.map((name) => banner('warn', `${name} did not answer — its accounts were not looked at. Restore again later.`)),
+      results.length ? moveReport(results) : note('There were no accounts to move.'),
+      failed && later ? note(later) : null,
+    ],
+    actions: [failed ? button('Try again', retry, 'primary') : button('Done', done, 'primary')],
+    links: failed ? [['Later', done]] : [],
+  })
+}
+
+// The prompts name keys by what the OS stored, so the screen names the old one too and
+// says in which order they come: the second prompt is the new key, not the old.
+function replaceKeyScreen(passkey, { back = homeScreen } = {}) {
+  const pending = pendingMoveOf(passkey)
+  if (pending) return finishMoveScreen(passkey, pending, { back })
+
+  const out = stack([])
+  const name = passkeyLabel(passkey)
+
+  screen({
+    body: [
+      pageTitle('Replace passkey', 'Its accounts move to a new key and new words'),
+      section('replacing', [card([tile({ icon: ICONS.key, title: name, sub: accountsLine(passkey) })])]),
       section('what this does', [
         consequences([
-          'The key on this device stops working for these accounts.',
-          'Your 24 words change. The old words stop working — save the new ones.',
-          'Fast sign is turned off — switch it back on afterwards.',
+          `${name} stops working for these accounts. Your other passkeys are not touched.`,
+          'Its 24 words change. Once everything has moved the old words stop working — save the new ones.',
+          'Fast sign is turned off on every device — switch it back on afterwards.',
           'Accounts whose owner is another wallet only get the new passkey on active.',
+        ]),
+      ]),
+      section('passkey prompts', [
+        consequences([
+          'First two: save the new key, then unlock it for the new words.',
+          `Then ${name}: to find its accounts, and again for each account it signs.`,
         ]),
       ]),
       out,
@@ -1464,46 +1648,100 @@ function replaceKeyScreen(passkey) {
         'primary'
       ),
     ],
-    back: () => homeScreen(),
+    back: () => back(),
   })
 }
 
 function confirmMove(passkey, next, newRoot) {
+  const name = passkeyLabel(passkey)
+  const leave = () => {
+    forgetRoot(newRoot)
+    homeScreen()
+  }
+
   return attempt({
     title: 'Moving your accounts',
-    sub: 'Confirm with the old passkey',
-    busy: 'Old key — confirm with your passkey',
-    back: () => {
-      forgetRoot(newRoot)
-      homeScreen()
-    },
+    sub: `Confirm with ${name}`,
+    busy: `${name} — confirm with your passkey`,
+    back: leave,
     // The old root and its keys go on every way out: a retry derives them again.
     // The new root stays for a retry until the move is done.
     run: async (work) => {
+      // Before anything moves: leaving halfway, the rest goes to this same new key later.
+      rememberMove(passkey.publicKey, next.publicKey)
       const oldRoot = await rootFromPasskey(passkey)
       let found = []
       let results
       try {
         work.replaceChildren(status('Finding your accounts'))
 
-        const [byRoot, byPasskey] = await Promise.all([rootAccounts(oldRoot), findAccounts([passkey])])
+        const failed = new Set()
+        const [byRoot, byPasskey] = await Promise.all([rootAccounts(oldRoot), findAccounts([passkey], failed)])
         found = byRoot.accounts
-        const accounts = mergeAccounts(found, byPasskey)
+
+        // A network that did not answer may hold accounts of this key: moving the rest
+        // and retiring the key would strand them, so nothing moves until all answer.
+        const silent = unique([...byRoot.failed, ...[...failed].map(chainName)])
+        if (silent.length) throw new Error(`${silent.join(', ')} did not answer. Nothing was moved — try again in a minute.`)
 
         work.replaceChildren(status('Moving — your passkey may ask more than once'))
-        results = await moveAll(accounts, { oldPasskey: passkey, newPasskey: next, newRoot })
+        results = await moveAll(mergeAccounts(found, byPasskey), { oldPasskey: passkey, newPasskey: next, newRoot })
       } finally {
         forgetFoundKeys(found)
         forgetRoot(oldRoot)
       }
 
-      forgetRoot(newRoot)
-      if (results.every((result) => !result.error)) forgetPasskey(passkey.publicKey)
+      if (results.every((result) => !result.error)) {
+        forgetRoot(newRoot)
+        forgetPasskey(passkey.publicKey)
+        forgetMove(passkey.publicKey)
+      }
 
-      screen({
-        body: [pageTitle('Moved', 'Your accounts now use the new key'), moveReport(results)],
-        actions: [button('Done', () => homeScreen(), 'primary')],
+      moveResult({
+        title: 'Moved',
+        results,
+        retry: () => confirmMove(passkey, next, newRoot),
+        later: 'Later you can finish it from Security — the same new key and words.',
+        done: leave,
       })
+    },
+  })
+}
+
+// A replace that stopped halfway: what is left moves to the same new key and words.
+function finishMoveScreen(passkey, next, { back = homeScreen } = {}) {
+  const name = passkeyLabel(passkey)
+  const nextName = passkeyLabel(next)
+
+  screen({
+    body: [
+      pageTitle('Finish moving', `What is left on ${name} moves to ${nextName}`),
+      section('from', [card([tile({ icon: ICONS.key, title: name, sub: accountsLine(passkey) })])]),
+      section('to', [card([tile({ icon: ICONS.key, tone: 'mint', title: nextName, sub: accountsLine(next) })])]),
+      section('passkey prompts', [
+        consequences([
+          `First ${nextName}: to unlock its words.`,
+          `Then ${name}: to find what is left, and again for each account it signs.`,
+        ]),
+      ]),
+    ],
+    actions: [button('Continue moving', () => resumeMove(passkey, next), 'primary')],
+    back: () => back(),
+  })
+}
+
+function resumeMove(passkey, next) {
+  const nextName = passkeyLabel(next)
+
+  return attempt({
+    title: 'Moving your accounts',
+    sub: `Confirm with ${nextName}`,
+    busy: `${nextName} — confirm with your passkey`,
+    back: () => homeScreen(),
+    run: async () => {
+      const newRoot = await rootFromPasskey(next)
+      forgetOnHome(() => forgetRoot(newRoot))
+      confirmMove(passkey, next, newRoot)
     },
   })
 }
@@ -1550,6 +1788,7 @@ function restoreScreen() {
       forgetFoundKeys(accounts)
       forgetRoot(oldRoot)
     }
+    forgetOnHome(forgetOld)
 
     try {
       const found = await rootAccounts(oldRoot)
@@ -1565,40 +1804,41 @@ function restoreScreen() {
         return
       }
 
+      const move = (next, newRoot, list) => {
+        const finish = () => {
+          forgetOld()
+          forgetRoot(newRoot)
+          homeScreen()
+        }
+
+        attempt({
+          title: 'Moving your accounts',
+          busy: 'Signing with the old words',
+          back: finish,
+          run: async () => {
+            const results = await moveAll(list, { newPasskey: next, newRoot, lost: true })
+            const left = results.filter((result) => result.error).map((result) => result.entry)
+            if (!left.length) {
+              forgetOld()
+              forgetRoot(newRoot)
+            }
+            moveResult({ title: 'Restored', results, skipped: failed, retry: () => move(next, newRoot, left), done: finish })
+          },
+        })
+      }
+
       screen({
         body: [
           pageTitle('Accounts found', 'They move to a new passkey and new words'),
           card(accounts.map((entry) => tile({ icon: ICONS.user, tone: 'mint', title: entry.name, sub: entry.chain.name }))),
           ...failed.map((name) => banner('warn', `${name} did not answer — its accounts are not listed.`)),
+          consequences([
+            'Every Alcor Signer passkey and Fast sign key on them is removed: a lost device keeps nothing.',
+            'Keys of other wallets stay as they are.',
+          ]),
           out,
         ],
-        actions: [
-          button(
-            'Create the new key',
-            () =>
-              createKeyFlow(out, (next, newRoot) =>
-                attempt({
-                  title: 'Moving your accounts',
-                  busy: 'Signing with the old words',
-                  back: () => {
-                    forgetOld()
-                    forgetRoot(newRoot)
-                    homeScreen()
-                  },
-                  run: async () => {
-                    const results = await moveAll(accounts, { newPasskey: next, newRoot })
-                    forgetOld()
-                    forgetRoot(newRoot)
-                    screen({
-                      body: [pageTitle('Restored', 'Your accounts now use the new key'), moveReport(results)],
-                      actions: [button('Done', () => homeScreen(), 'primary')],
-                    })
-                  },
-                })
-              ),
-            'primary'
-          ),
-        ],
+        actions: [button('Create the new key', () => createKeyFlow(out, (next, newRoot) => move(next, newRoot, accounts)), 'primary')],
         links: [
           [
             'Cancel',
@@ -1680,6 +1920,7 @@ function importScreen(passkey, flow = null) {
       privateKey = PrivateKey.from(input.value.trim())
       if (String(privateKey.type) !== 'K1') throw new Error('not K1')
     } catch {
+      privateKey?.data.array.fill(0)
       out.replaceChildren(banner('danger', 'This is not an Antelope private key.'))
       return
     }
@@ -1687,6 +1928,8 @@ function importScreen(passkey, flow = null) {
     input.value = ''
     out.replaceChildren(status('Looking up the account'))
 
+    // Handed on to the confirm screen, or wiped here.
+    let handed = false
     try {
       const publicKey = k1PublicKey(privateKey)
       const found = (await accountsForKey(network, publicKey)).filter((entry) =>
@@ -1699,14 +1942,18 @@ function importScreen(passkey, flow = null) {
       }
 
       importConfirm(passkey, network, privateKey, publicKey, found, flow)
+      handed = true
     } catch (error) {
       out.replaceChildren(failure(error))
+    } finally {
+      if (!handed) privateKey.data.array.fill(0)
     }
   }
 }
 
 function importConfirm(passkey, on, privateKey, publicKey, found, flow = null) {
   const out = stack([])
+  forgetOnHome(() => privateKey?.data.array.fill(0))
 
   const accounts = new Map()
   for (const entry of found) {
@@ -1753,7 +2000,7 @@ function importConfirm(passkey, on, privateKey, publicKey, found, flow = null) {
             icon: ICONS.ban,
             title: 'Remove the old key',
             on: removeOld,
-            onText: 'On — this key stops working. The old wallet loses access',
+            onText: 'On — this key is removed. Other keys of the old wallet, listed below, keep access',
             offText: 'Off — the old wallet, and anyone with this key, still controls it',
             onchange: (value) => (removeOld = value),
           }),
@@ -1797,7 +2044,7 @@ function importConfirm(passkey, on, privateKey, publicKey, found, flow = null) {
     stays.replaceChildren(
       section('also has access', [
         consequences(others.map(({ name, permission, other }) => `${name}@${permission} · ${other.text}`)),
-        safeHint(ICONS.check, ['All fine — they keep access as before. The import changes nothing for them.']),
+        note('They keep access as before: the import does not touch them. To cut one off, remove it in the wallet that holds it.'),
       ])
     )
     for (const { name, permission, other } of others) seen.add(seenId(name, permission, other))
@@ -1841,7 +2088,7 @@ function importConfirm(passkey, on, privateKey, publicKey, found, flow = null) {
           out.replaceChildren(status(`Fast sign for ${name} — confirm with your passkey`))
           const scope = scopeOf(on, name, on.permission)
           const secret = await hotSecret(passkey, scope)
-          const next = (await hotCandidates(secret))[randomSlot()]
+          const next = (await hotCandidates(secret))[randomSlot(scope)]
           hotKeys.push({ secret, scope, n: next.n })
           addActive.push(next.publicKey)
         }
@@ -1856,7 +2103,10 @@ function importConfirm(passkey, on, privateKey, publicKey, found, flow = null) {
         )
 
         if (permission === 'owner' && owner.threshold !== 1) {
-          notes.push(`${name}@owner needs ${owner.threshold} signatures — the 24 words alone would not recover it, so they were not added.`)
+          notes.push(
+            `${name}@owner needs ${owner.threshold} signatures — the 24 words alone would not recover it, so they were not added` +
+              (removeOld ? ', and this key stays on owner.' : '.')
+          )
         } else if (permission === 'owner') {
           if (nextIndex === null) nextIndex = (await nextFreeIndex(root, on)).index
           const recovery = ownerPublicKey(root, on, nextIndex++)
@@ -1916,14 +2166,14 @@ function importConfirm(passkey, on, privateKey, publicKey, found, flow = null) {
 const chainName = (chainId) =>
   Object.values(CHAINS).find((entry) => entry.chainId === chainId)?.name ?? chainId.slice(0, 8)
 
-function techDetails(passkey) {
+function techDetails(passkeys) {
   const box = el('div')
 
   listHotKeys().then((keys) =>
     box.replaceChildren(
       card(
         [
-          field('passkey', mono(passkey.publicKey)),
+          ...passkeys.map((passkey) => field(`passkey · ${passkeyLabel(passkey)}`, mono(passkey.publicKey))),
           ...keys.map((key) =>
             field(`fast sign · ${key.scope.account}@${key.scope.permission} · ${chainName(key.scope.chainId)} · #${key.n}`, mono(key.publicKey))
           ),
@@ -2054,7 +2304,10 @@ function loginScreen(incoming) {
               title: 'Import a wallet',
               sub: 'Bring an Anchor or other account with its private key',
               aside: icon(ICONS.chevron, 14),
-              onclick: () => importScreen(passkeys[0], { back: again, done: again }),
+              onclick: () =>
+                withPickedPasskey(passkeys, 'Import a wallet', (passkey) => importScreen(passkey, { back: again, done: again }), {
+                  back: again,
+                }),
             }),
             tile({
               icon: ICONS.plus,
@@ -2447,7 +2700,7 @@ async function enrollHotKey(passkey, scope) {
     const auth = await permissionAuthority(chain, scope.account, scope.permission).catch(() => null)
     const present = candidates.find((candidate) => auth?.keys.some((entry) => entry.key === candidate.publicKey))
 
-    return await adoptHotKey(secret, scope, present?.n ?? randomSlot())
+    return await adoptHotKey(secret, scope, present?.n ?? randomSlot(scope))
   } finally {
     secret.fill(0)
   }
@@ -2542,6 +2795,7 @@ async function confirmScreen({ request, reply }) {
   // One layout from the first frame to the last: the buttons stay put, only the page
   // above them fills in. Reject works from the start.
   screen({ body: confirmSkeleton(from), actions: [signButton('Confirm', null, 'Checking the request')], links: [reject] })
+  const ticket = screens
 
   // The signer's authority is read alongside the build, from the request, as in autoSign.
   // It counts only if the built transaction names the same signer.
@@ -2557,6 +2811,7 @@ async function confirmScreen({ request, reply }) {
   try {
     built = await buildTransaction(chain, request.actions)
   } catch (error) {
+    if (screens !== ticket) return
     // A node failure isn't a rejection: the request is alive, and a retry rebuilds it.
     screen({
       body: [
@@ -2569,16 +2824,30 @@ async function confirmScreen({ request, reply }) {
     return
   }
 
+  if (screens !== ticket) return
+
   // Everything below comes from the built transaction, not the request: show what gets signed.
-  const summary = summarize(chain, built.actions)
-  const signers = userAuthorizations(chain, built.actions)
-  const signer = signers[0]
-  const alcorPaysCpu = built.actions.some((action) => isCpuPayerNoop(chain, action))
+  let summary, signers, signer, alcorPaysCpu, auth, options
+  try {
+    // The same refusal as for the request, on what is actually signed.
+    assertAllowedFromApp(built.actions)
+    summary = summarize(chain, built.actions)
+    signers = userAuthorizations(chain, built.actions)
+    signer = signers[0]
+    alcorPaysCpu = built.actions.some((action) => isCpuPayerNoop(chain, action))
+    auth = !signer ? null : sameLevel(signer, asked) ? await prefetched : await readAuthority(signer)
+    options = await signingOptions(passkey, signers, auth)
+  } catch (error) {
+    if (screens !== ticket) return
+    refuseRequest(reply, { title: 'Could not check it', text: String(error?.message ?? error) })
+    return
+  }
+  // The person went home while this was loading: the app already heard "cancelled".
+  if (screens !== ticket) return
+  const { session, choosable } = options
+
   // Errors show right above the button: after a click the eyes are there, not down the page.
   const out = stack([])
-
-  const auth = !signer ? null : sameLevel(signer, asked) ? await prefetched : await readAuthority(signer)
-  const { session, choosable } = await signingOptions(passkey, signers, auth)
 
   /**
    * The mode applies from the NEXT signature. The permission change is its own
@@ -2723,12 +2992,12 @@ async function confirmScreen({ request, reply }) {
 
   screen({
     body: [
-      pageTitle(summary.title, `From ${from}`),
+      pageTitle(summary.heading ? [`${summary.heading.lead} `, accountTag(summary.heading.account)] : summary.title, `From ${from}`),
+      // Risks first: a long list of amounts must not push them under the fold.
+      ...[...built.warnings, ...summary.risks].map((risk) => banner(risk.kind, risk.text)),
       summary.flows.length
         ? section('what happens', [card(summary.flows.map(flow))])
         : null,
-      // Risks right under the amounts, before the buttons.
-      ...[...built.warnings, ...summary.risks].map((risk) => banner(risk.kind, risk.text)),
       // Every signer, not just the first: one passkey signs for all its accounts at once.
       section('signing as', [
         ...signers.map((level) =>
@@ -2841,8 +3110,12 @@ function settingsScreen({ request, reply }) {
 // For wallets that won't sign updateauth from a website (Anchor): the key is pasted here, not in the app.
 function importRequest({ request, reply }) {
   const context = { reply, account: String(request.account ?? '') }
-  const [primary] = loadPasskeys()
-  if (primary) return importScreen(primary, context)
+  const passkeys = loadPasskeys()
+  if (passkeys.length) {
+    return withPickedPasskey(passkeys, 'Import a wallet', (passkey) => importScreen(passkey, context), {
+      back: cancelLink(reply)[1],
+    })
+  }
 
   welcomeScreen({
     then: (passkey, root) => {
@@ -2989,9 +3262,9 @@ if (isEmbedded()) {
   if (incoming.timedOut) {
     timeoutScreen()
   } else {
-    // No network named: the default.
+    // The network is named in every request; a missing one is refused, not guessed.
     try {
-      if (incoming.request.chain) chain = chainById(incoming.request.chain)
+      chain = chainById(incoming.request.chain)
     } catch (error) {
       screen({
         body: [state({ icon: ICONS.ban, tone: 'red', title: 'Unknown network', text: error.message })],

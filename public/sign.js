@@ -21,8 +21,14 @@ import { signWithSession } from './session.js'
 
 const clients = new Map()
 
+// A node that takes the connection and never answers must not hang the window: give up
+// and try the next one. Pushes too — the next node gets the same signed bytes, and one
+// that already has them answers "duplicate".
+const NODE_TIMEOUT_MS = 15_000
+const fetchWithTimeout = (url, init) => fetch(url, { ...init, signal: AbortSignal.timeout(NODE_TIMEOUT_MS) })
+
 function clientFor(url) {
-  if (!clients.has(url)) clients.set(url, new APIClient({ url }))
+  if (!clients.has(url)) clients.set(url, new APIClient({ url, fetch: fetchWithTimeout }))
   return clients.get(url)
 }
 

@@ -28,6 +28,9 @@ export function awaitRequest() {
         return
       }
       if (event.data?.type !== 'vault:request') return
+      // Only the window that opened us: any other window of an allowed origin holding a
+      // reference to the popup could otherwise slip its own request in.
+      if (event.source !== window.opener) return
 
       console.info('[vault] ← request', event.data.kind, event.data.reqId)
 

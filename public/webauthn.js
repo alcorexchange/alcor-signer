@@ -13,6 +13,13 @@ export function webAuthnPublicKey(point, presence, host) {
   return new PublicKey(KeyType.WA, Bytes.from([...point, presence, ...withLength(new TextEncoder().encode(host))]))
 }
 
+// Whether a key is a passkey of `host`: rebuilt with that host, a `PUB_WA_` comes out the same.
+export function isPasskeyOf(key, host) {
+  if (!String(key).startsWith('PUB_WA_')) return false
+  const bytes = PublicKey.from(key).data.array
+  return String(webAuthnPublicKey(bytes.slice(0, 33), bytes[33], host)) === String(key)
+}
+
 export function hostOf(clientDataJSON) {
   const origin = new URL(JSON.parse(new TextDecoder().decode(clientDataJSON)).origin)
   if (origin.protocol !== 'https:') throw new Error('WebAuthn keys require https')

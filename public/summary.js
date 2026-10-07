@@ -48,6 +48,8 @@ export function summarize(chain, actions) {
 
   return {
     title,
+    // The account a lone title names, so the screen can set it apart from the words.
+    heading: titles.length === 1 && named.length === 1 ? named[0].heading ?? null : null,
     flows: groups.flatMap((group) => flowsOf(chain, group)),
     risks: unique(legs.flatMap((leg) => leg.risks)),
   }
@@ -507,23 +509,25 @@ function transfer(chain, action) {
   if (!amount) {
     return {
       title: `Transfer to ${to}`,
+      heading: { lead: 'Transfer to', account: to },
       risks: [{ kind: 'warn', text: `Alcor cannot read the amount “${data.quantity}”. Read every field below.` }],
     }
   }
 
-  const risks = []
-  const native = chain.systemToken
-
-  // Anyone can issue a "TLOS": only the contract tells the real network token apart.
-  if (amount.symbol === native.symbol && amount.contract !== native.contract) {
-    risks.push({
-      kind: 'danger',
-      text: `This ${amount.symbol} is not the real one: it is issued by ${amount.contract}, not ${native.contract}.`,
-    })
-  }
-
   const leg = receiverDecoder(chain, to)(chain, { from: String(data.from ?? ''), to, amount, memo: String(data.memo ?? '') })
-  return { ...leg, risks: [...risks, ...leg.risks] }
+  // Both ways: a fake sent is as wrong as a fake that comes back for real money.
+  const fakes = [amount, leg.receive].map((token) => fakeNative(chain, token)).filter(Boolean)
+  return { ...leg, risks: [...fakes, ...leg.risks] }
+}
+
+// Anyone can issue a "TLOS": only the contract tells the real network token apart.
+function fakeNative(chain, token) {
+  const native = chain.systemToken
+  if (!token || token.symbol !== native.symbol || token.contract === native.contract) return null
+  return {
+    kind: 'danger',
+    text: `This ${token.symbol} is not the real one: it is issued by ${token.contract}, not ${native.contract}.`,
+  }
 }
 
 // AMM: `<tag>#<route>#<recipient>#<amount>@<contract>#<deadline>`. `swapexactin`: the
@@ -630,6 +634,7 @@ function plainTransfer(chain, { to, amount, memo }) {
 
   return {
     title: `Transfer to ${to}`,
+    heading: { lead: 'Transfer to', account: to },
     out: { amount, to, note: memo ? `memo “${memo}”` : undefined },
     risks,
   }
@@ -704,7 +709,7 @@ function merge(legs) {
  * Send/receive rows. The token contract is always shown except for the native token:
  * a symbol is just a string, only the contract tells a fake apart.
  *
- * @returns {{ dir: 'out' | 'in', label: string, amount: string | string[], sub: string }[]}
+ * @returns {{ dir: 'out' | 'in', label: string, amount: string | string[], to?: string, sub: string }[]}
  */
 function flowsOf(chain, group) {
   const flows = []
@@ -713,10 +718,10 @@ function flowsOf(chain, group) {
   if (group.out) {
     const { amount, to, note } = group.out
     const change = group.exactOut ? 'the rest comes back' : null
-    const sub = [`to ${to}`, issuer(amount), group.count > 1 ? `${group.count} routes` : null, change, note]
+    const sub = [issuer(amount), group.count > 1 ? `${group.count} routes` : null, change, note]
     const label = group.exactOut ? 'You send at most' : 'You send'
 
-    flows.push({ dir: 'out', label, amount: formatAmount(amount), sub: sub.filter(Boolean).join(' · ') })
+    flows.push({ dir: 'out', label, amount: formatAmount(amount), to, sub: sub.filter(Boolean).join(' · ') })
   }
 
   if (group.receive) {

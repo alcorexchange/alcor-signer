@@ -44,6 +44,20 @@
   --error-soft: rgba(240, 98, 98, 0.09);
   --error-line: rgba(240, 98, 98, 0.3);
 
+  /* Exact values once inlined in rules; named so every color lives here. */
+  --sell-line: rgba(240, 113, 137, 0.4);
+  --track-bg: rgba(255, 255, 255, 0.04);
+  --track-on: rgba(255, 255, 255, 0.08);
+  --input-bg: #181b1a;
+  --error-text: #ffb4b4;
+  --warning-text: #efdca6;
+  --check-line: rgba(255, 255, 255, 0.14);
+  --skeleton-bg: rgba(255, 255, 255, 0.07);
+  --backdrop: rgba(0, 0, 0, 0.62);
+  --fill-gloss: rgba(255, 255, 255, 0.28);
+  --fill-shadow: rgba(0, 0, 0, 0.35);
+  --primary-ink-soft: rgba(4, 21, 14, 0.25);
+
   --font: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   --mono: ui-monospace, 'SF Mono', Menlo, Monaco, 'Courier New', monospace;
 
@@ -178,6 +192,18 @@ button.brand-home:hover .brand-name { color: var(--text); }
 
 .page-title { margin: 0; font-size: 18px; font-weight: 500; line-height: 1.3; letter-spacing: -0.02em; word-break: break-word; }
 .page-title .accent { color: var(--primary); }
+
+/* An account name among words: mono on a quiet chip, so it never blends into the sentence. */
+.account {
+  padding: 0 5px;
+  border-radius: var(--radius-xs);
+  background: var(--subtle-bg);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 0.92em;
+  letter-spacing: 0;
+  white-space: nowrap;
+}
 .page-sub { margin-top: 4px; font-size: 12px; line-height: 1.55; color: var(--text-muted); }
 
 button.back {
@@ -336,7 +362,7 @@ button.inline-action {
 }
 button.inline-action:hover:not(:disabled) { background: none; border-color: var(--text-faint); color: var(--text); }
 button.inline-action.quiet { color: var(--text-muted); }
-button.inline-action.quiet:hover:not(:disabled) { border-color: rgba(240, 113, 137, 0.4); color: var(--sell); }
+button.inline-action.quiet:hover:not(:disabled) { border-color: var(--sell-line); color: var(--sell); }
 .segmented button:disabled { opacity: 0.5; }
 
 /* ── choice ─────────────────────────────────────────────── */
@@ -367,7 +393,7 @@ button.choice:hover:not(:disabled) .choice-go { transform: translateX(2px); colo
   gap: 2px;
   padding: 2px;
   border-radius: var(--radius-md);
-  background: rgba(255, 255, 255, 0.04);
+  background: var(--track-bg);
 }
 .segmented button {
   display: inline-flex;
@@ -385,7 +411,7 @@ button.choice:hover:not(:disabled) .choice-go { transform: translateX(2px); colo
 }
 .segmented button:hover:not(:disabled) { background: none; color: var(--text-secondary); }
 .segmented button.on,
-.segmented button.on:hover:not(:disabled) { background: rgba(255, 255, 255, 0.08); color: var(--text); }
+.segmented button.on:hover:not(:disabled) { background: var(--track-on); color: var(--text); }
 .segmented .chain-logo { width: 14px; height: 14px; opacity: 0.55; transition: opacity 0.15s; }
 .segmented button:hover .chain-logo,
 .segmented button.on .chain-logo { opacity: 1; }
@@ -602,7 +628,7 @@ button.mode-option:hover .mode-option-name { color: color-mix(in srgb, var(--pri
   padding: 9px 11px;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-md);
-  background: #181b1a;
+  background: var(--input-bg);
   font-size: 11.5px;
   line-height: 1.45;
   color: var(--text-muted);
@@ -666,8 +692,8 @@ button.mode-option:hover .mode-option-name { color: color-mix(in srgb, var(--pri
   word-break: break-word;
 }
 
-.banner.danger { border-color: var(--error-line); background: var(--error-soft); color: #ffb4b4; }
-.banner.warn { border-color: var(--warning-line); background: var(--warning-soft); color: #efdca6; }
+.banner.danger { border-color: var(--error-line); background: var(--error-soft); color: var(--error-text); }
+.banner.warn { border-color: var(--warning-line); background: var(--warning-soft); color: var(--warning-text); }
 .banner.ok { padding: 0; border: none; background: none; color: var(--text-secondary); }
 .banner.ok svg { color: var(--primary); }
 .banner.info { padding: 0; border: none; background: none; color: var(--text-muted); }
@@ -687,7 +713,7 @@ button.mode-option:hover .mode-option-name { color: color-mix(in srgb, var(--pri
   flex: none;
   width: 14px;
   height: 14px;
-  border: 1.5px solid rgba(255, 255, 255, 0.14);
+  border: 1.5px solid var(--check-line);
   border-top-color: var(--primary);
   border-radius: 50%;
   animation: spin 0.7s linear infinite;
@@ -698,7 +724,7 @@ button.mode-option:hover .mode-option-name { color: color-mix(in srgb, var(--pri
   display: inline-block;
   height: 12px;
   border-radius: 4px;
-  background: rgba(255, 255, 255, 0.07);
+  background: var(--skeleton-bg);
   vertical-align: middle;
 }
 
@@ -933,7 +959,7 @@ dialog.confirm {
   background: var(--bg);
   color: var(--text);
 }
-dialog.confirm::backdrop { background: rgba(0, 0, 0, 0.62); }
+dialog.confirm::backdrop { background: var(--backdrop); }
 
 .confirm-body { display: flex; flex-direction: column; gap: 8px; padding: 22px 20px 16px; }
 .confirm-icon { display: flex; margin-bottom: 4px; color: var(--primary); }
@@ -984,7 +1010,7 @@ a.button.primary {
   padding: 13px 16px;
   border-color: transparent;
   background: var(--primary-fill);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.28), 0 1px 2px rgba(0, 0, 0, 0.35);
+  box-shadow: inset 0 1px 0 var(--fill-gloss), 0 1px 2px var(--fill-shadow);
   color: var(--primary-ink);
   font-size: 14px;
   font-weight: 600;
@@ -1007,7 +1033,7 @@ button.sign {
 button.sign.busy:disabled,
 button.sign.done:disabled { opacity: 1; }
 button.sign.busy { background: color-mix(in srgb, var(--primary-fill) 72%, var(--bg)); }
-button.sign .spinner { border-color: rgba(4, 21, 14, 0.25); border-top-color: var(--primary-ink); }
+button.sign .spinner { border-color: var(--primary-ink-soft); border-top-color: var(--primary-ink); }
 
 .action-links {
   display: flex;

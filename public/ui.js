@@ -99,6 +99,9 @@ export const pageTitle = (title, sub) =>
 
 export const accent = (text) => el('span', { className: 'accent', textContent: text })
 
+// An account name set apart from the words around it: whose it is must read at a glance.
+export const accountTag = (name) => el('span', { className: 'account', textContent: name })
+
 export const stack = (children, { tight = false } = {}) =>
   el('div', { className: tight ? 'stack tight' : 'stack' }, children)
 
@@ -357,12 +360,12 @@ export const state = ({ icon: paths, tone = '', title, text }) =>
   ])
 
 /** `amount`: one line, or one per token for a pair. */
-export const flow = ({ dir, label, amount, sub }) =>
+export const flow = ({ dir, label, amount, to, sub }) =>
   tile({
     icon: dir === 'out' ? ICONS.out : ICONS.in,
     tone: dir === 'out' ? 'pink' : 'mint',
     title: label,
-    sub,
+    sub: to ? el('span', {}, ['to ', accountTag(to), sub ? ` · ${sub}` : null]) : sub,
     aside: el('span', { className: 'flow-amount' }, [amount].flat().map((line) => el('span', { textContent: line }))),
     className: `flow ${dir}`,
   })
@@ -472,6 +475,21 @@ export function button(text, onclick, variant = '') {
   })
 }
 
+// A click lands only after the window has had focus, and the button has been ready, for
+// this long: a click aimed at another window, or timed by a page that opened this one
+// under the cursor, must not become a signature. Too short for a person to notice.
+const ARM_MS = 400
+
+let focusedAt = performance.now()
+addEventListener('focus', () => (focusedAt = performance.now()))
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) focusedAt = performance.now()
+})
+
+const settled = (since) => document.hasFocus() && performance.now() - Math.max(since, focusedAt) >= ARM_MS
+
+const readyAt = new WeakMap()
+
 /**
  * The main button of a signing screen. It shows its own progress: after the click the
  * eyes are on it, not on the page above. Starts busy when `busy` is given.
@@ -480,7 +498,11 @@ export function button(text, onclick, variant = '') {
  * window took focus would sign what the user never saw.
  */
 export function signButton(text, onclick, busy = null) {
-  const node = el('button', { type: 'button', className: 'primary sign', onclick })
+  const node = el('button', {
+    type: 'button',
+    className: 'primary sign',
+    onclick: (event) => settled(readyAt.get(node) ?? Infinity) && onclick?.(event),
+  })
   node.dataset.label = text
   setBusy(node, busy)
   return node
@@ -488,6 +510,7 @@ export function signButton(text, onclick, busy = null) {
 
 /** `text` locks the button with a spinner; null makes it ready again. */
 export function setBusy(node, text) {
+  if (text === null) readyAt.set(node, performance.now())
   node.disabled = text !== null
   node.classList.toggle('busy', text !== null)
   node.replaceChildren(
@@ -575,6 +598,10 @@ export const wordGrid = (words) =>
     copyButton(words.join(' ')),
   ])
 
+// Copied words don't stay in the clipboard for whatever is pasted next. Best effort: a
+// browser that allows writes only on a gesture refuses, and clipboard history is out of reach.
+const CLIPBOARD_MS = 60_000
+
 function copyButton(value) {
   const copy = el('button', { className: 'secret-copy', type: 'button' }, [
     icon(ICONS.copy, 13),
@@ -583,12 +610,13 @@ function copyButton(value) {
 
   copy.onclick = async () => {
     await navigator.clipboard.writeText(value)
-    copy.replaceChildren(icon(ICONS.check, 13), el('span', { textContent: 'Copied' }))
+    copy.replaceChildren(icon(ICONS.check, 13), el('span', { textContent: 'Copied · cleared in a minute' }))
     copy.classList.add('done')
     setTimeout(() => {
       copy.replaceChildren(icon(ICONS.copy, 13), el('span', { textContent: 'Copy' }))
       copy.classList.remove('done')
-    }, 1200)
+    }, 2000)
+    setTimeout(() => navigator.clipboard.writeText('').catch(() => {}), CLIPBOARD_MS)
   }
 
   return copy
@@ -641,6 +669,10 @@ export function confirmDialog({ icon: paths, tone = '', title, text, details = n
       dialog.close()
     }
 
+    // Focus goes to the safe answer: showModal would put it on the first button, and a
+    // stray Enter or Space would then confirm what the person never read.
+    const no = el('button', { type: 'button', className: 'quiet', textContent: cancel, onclick: () => answer(false) })
+
     dialog.append(
       el('div', { className: 'confirm-body' }, [
         paths ? el('span', { className: `confirm-icon ${tone}`.trim() }, [icon(paths, 18)]) : null,
@@ -648,8 +680,8 @@ export function confirmDialog({ icon: paths, tone = '', title, text, details = n
         el('p', { className: 'confirm-text', textContent: text }),
         details,
         el('div', { className: 'confirm-actions' }, [
-          el('button', { type: 'button', className: 'primary', textContent: confirm, onclick: () => answer(true) }),
-          el('button', { type: 'button', className: 'quiet', textContent: cancel, onclick: () => answer(false) }),
+          el('button', { type: 'button', className: 'primary', textContent: confirm, onclick: () => settled(openedAt) && answer(true) }),
+          no,
         ]),
       ])
     )
@@ -665,6 +697,8 @@ export function confirmDialog({ icon: paths, tone = '', title, text, details = n
 
     document.body.append(dialog)
     dialog.showModal()
+    no.focus()
+    const openedAt = performance.now()
   })
 }
 
@@ -682,9 +716,20 @@ export function checkbox(label, onchange, { checked = false, sub, aside } = {}) 
     aside ?? null,
   ])
 
-  node.onclick = () => {
+  // A label holds no input, so it gets the role and keys a checkbox has.
+  const toggle = () => {
     node.classList.toggle('on')
+    node.ariaChecked = String(node.classList.contains('on'))
     onchange(node.classList.contains('on'))
+  }
+  node.tabIndex = 0
+  node.role = 'checkbox'
+  node.ariaChecked = String(checked)
+  node.onclick = toggle
+  node.onkeydown = (event) => {
+    if (event.key !== ' ') return
+    event.preventDefault()
+    toggle()
   }
 
   return node
