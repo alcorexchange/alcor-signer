@@ -385,6 +385,7 @@ button.choice:hover:not(:disabled) .choice-go { transform: translateX(2px); colo
 
 .segmented {
   display: inline-flex;
+  flex-wrap: wrap;
   align-self: flex-start;
   gap: 2px;
   padding: 2px;

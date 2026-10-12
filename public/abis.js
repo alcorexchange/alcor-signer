@@ -21,5 +21,11 @@ export const PINNED_ABIS = {
     "eosio.token": "bf13acab1b4bc2676ef6f0afcf1765ab5db3ffa1ac18453a628e1e65fe26e045",
     "swap.alcor": "7252a6b47a0484fae77ee3408aec806102270c4b2a7b5d19eabe0fb7ce1d1c9a",
     "alcor": "8b43316996c04b0464e3042192dcc4c55a1dea6bef05349e10d434cb648e1c15"
+  },
+  "vaulta": {
+    "eosio": "dbd704dd1b7df115cf9a4c31eb98dd1336476ea5642445aa00dc8f8bb4910abc",
+    "eosio.token": "b0d66b0c516dbafbee060e23db692562e852354c0f978dd9549cbed1f16a1580",
+    "swap.alcor": "7252a6b47a0484fae77ee3408aec806102270c4b2a7b5d19eabe0fb7ce1d1c9a",
+    "eostokensdex": "8b43316996c04b0464e3042192dcc4c55a1dea6bef05349e10d434cb648e1c15"
   }
 }

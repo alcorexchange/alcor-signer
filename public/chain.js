@@ -77,6 +77,22 @@ export const CHAINS = {
     // XPR has no SLIP-44 index; 194 (EOS) is the fallback, and it stays even if one appears.
     slip44: 194,
   },
+
+  vaulta: {
+    id: 'vaulta',
+    family: 'antelope',
+    name: 'Vaulta',
+    chainId: 'aca376f206b8fc25a6ed44dbdc66547c36c6c33e3a119ffbeaef943642f0e906',
+    rpcs: ['https://eos.greymass.com', 'https://eos.eosusa.io', 'https://eos.api.eosnation.io'],
+    explorer: 'https://bloks.io',
+    logo: './chains/vaulta.svg',
+    permission: 'active',
+    // RAM and staking still take EOS; `A` (core.vaulta) is a token like any other.
+    systemToken: { symbol: 'EOS', contract: 'eosio.token' },
+    alcor: { swap: 'swap.alcor', spot: 'eostokensdex' },
+    // EOS's own SLIP-44 index, shared with XPR. NEVER change it — see Telos.
+    slip44: 194,
+  },
 }
 
 
@@ -111,8 +127,9 @@ export function userAuthorizations(chain, actions) {
   return [...levels.values()]
 }
 
-// The app calls XPR `proton`; renaming it there would touch identity and sessions app-wide.
-const ALIASES = { proton: 'xpr' }
+// The app keeps the old names (XPR is `proton`, Vaulta is `eos`); renaming them there
+// would touch identity and sessions app-wide.
+const ALIASES = { proton: 'xpr', eos: 'vaulta' }
 
 export const DEFAULT_CHAIN = CHAINS.telos
 
@@ -136,6 +153,7 @@ export const ENVIRONMENTS = {
       'https://wax.alcor.exchange',
       'https://proton.alcor.exchange',
       'https://telos.alcor.exchange',
+      'https://eos.alcor.exchange',
     ],
   },
   dev: {

@@ -1,6 +1,6 @@
 # Alcor Signer
 
-> Alcor Signer (sign.alcor.exchange) is a passkey wallet for Antelope networks — Telos, WAX and XPR Network. It lives on its own origin, holds the keys and signs transactions for Alcor Exchange apps, so the trading app itself never holds a key. No extension, no app to install, no seed phrase to type in: a passkey on the device (Face ID, Touch ID, Windows Hello, Android fingerprint, a security key) is the wallet.
+> Alcor Signer (sign.alcor.exchange) is a passkey wallet for Antelope networks — Telos, WAX, XPR Network and Vaulta (formerly EOS). It lives on its own origin, holds the keys and signs transactions for Alcor Exchange apps, so the trading app itself never holds a key. No extension, no app to install, no seed phrase to type in: a passkey on the device (Face ID, Touch ID, Windows Hello, Android fingerprint, a security key) is the wallet.
 
 The site is a static page with no backend, no build step and no third-party code. Everything it shows is read from the chain; everything it stores in the browser is a cache that can be rebuilt from the passkey.
 
@@ -38,8 +38,9 @@ Permission changes (`updateauth`, `linkauth` and the like, `setcode`, `setabi`, 
 - Telos
 - WAX
 - XPR Network
+- Vaulta (formerly EOS)
 
-All three share one passkey and one recovery phrase. EVM networks are planned through keys derived from the same 24 words.
+All four share one passkey and one recovery phrase. EVM networks are planned through keys derived from the same 24 words.
 
 ## Who can use it
 
