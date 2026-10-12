@@ -4,7 +4,7 @@
 // `family` is how signing works. Within `antelope` one passkey serves every network:
 // the rpId is checked against the origin, not the chain.
 
-/** @typedef {{ id: string, family: string, name: string, chainId: string, rpcs: string[], explorer: string, logo: string, permission: string, systemToken: { symbol: string, contract: string }, alcor: { swap: string, spot: string }, bridge?: { contract?: string, networks?: Record<string, string>, lightClients?: Record<string, string>, gateways?: Record<string, string>, vault?: string }, slip44: number }} Chain */
+/** @typedef {{ id: string, family: string, name: string, chainId: string, rpcs: string[], explorer: string, logo: string, permission: string, systemToken: { symbol: string, contract: string }, alcor: { swap: string, spot: string }, bridge?: { contract?: string, lightClients?: Record<string, string>, gateways?: Record<string, string>, vault?: string, domain?: string }, slip44: number }} Chain */
 
 /** @type {Record<string, Chain>} */
 export const CHAINS = {
@@ -25,10 +25,22 @@ export const CHAINS = {
     // `.alcor` suffix: one redeployed under a new name reads as unknown until added here.
     bridge: {
       contract: 'bridge.alcor',
-      // The bridge's domain → name: a withdrawal memo is `<domain>:<recipient>`.
-      networks: { 1: 'Ethereum', 56: 'BNB Chain', '1181148696416462999': 'WAX' },
-      lightClients: { 'eth.lc.alcor': 'Ethereum', 'bsc.lc.alcor': 'BNB Chain', 'wax.lc.alcor': 'WAX' },
-      gateways: { 'eth.g.alcor': 'Ethereum', 'bsc.g.alcor': 'BNB Chain', 'wax.g.alcor': 'WAX' },
+      lightClients: {
+        'eth.lc.alcor': 'Ethereum',
+        'bsc.lc.alcor': 'BNB Chain',
+        'pol.lc.alcor': 'Polygon',
+        'wax.lc.alcor': 'WAX',
+        'xpr.lc.alcor': 'XPR Network',
+        'vlt.lc.alcor': 'Vaulta',
+      },
+      gateways: {
+        'eth.g.alcor': 'Ethereum',
+        'bsc.g.alcor': 'BNB Chain',
+        'pol.g.alcor': 'Polygon',
+        'wax.g.alcor': 'WAX',
+        'xpr.g.alcor': 'XPR Network',
+        'vlt.g.alcor': 'Vaulta',
+      },
     },
     // Network index in the key path from the 24 words (ADR-0010 §3). NEVER change it:
     // another index means other keys, and the words stop finding accounts.
@@ -51,8 +63,9 @@ export const CHAINS = {
     alcor: { swap: 'swap.alcor', spot: 'alcordexmain', liquid: 'liquid.alcor' },
     // Alcor pays CPU: the app puts the payer's `noop` first and adds its signature after ours.
     cpuPayer: { contract: 'liquid.alcor', action: 'noop', actor: 'liquid.alcor', permission: 'bw' },
-    // The bridge's vault here: a deposit to Telos is a transfer in, memo `<telos account>[:<note>]`.
-    bridge: { vault: 'bridge.alcor' },
+    // The bridge's vault here: a deposit to Telos is a transfer in (summary.js). `domain`
+    // is this network in the bridge's memos.
+    bridge: { vault: 'bridge.alcor', domain: '1181148696416462999' },
     // NEVER change it — see Telos.
     slip44: 14,
   },
@@ -74,6 +87,7 @@ export const CHAINS = {
     permission: 'active',
     systemToken: { symbol: 'XPR', contract: 'eosio.token' },
     alcor: { swap: 'swap.alcor', spot: 'alcor' },
+    bridge: { vault: 'bridge.alcor', domain: '4057084141687023600' },
     // XPR has no SLIP-44 index; 194 (EOS) is the fallback, and it stays even if one appears.
     slip44: 194,
   },
@@ -90,11 +104,27 @@ export const CHAINS = {
     // RAM and staking still take EOS; `A` (core.vaulta) is a token like any other.
     systemToken: { symbol: 'EOS', contract: 'eosio.token' },
     alcor: { swap: 'swap.alcor', spot: 'eostokensdex' },
+    bridge: { vault: 'bridge.alcor', domain: '12439917377594391589' },
     // EOS's own SLIP-44 index, shared with XPR. NEVER change it — see Telos.
     slip44: 194,
   },
 }
 
+// The bridge as its memos name it (summary.js). Domains are strings: too large for a
+// JS number. `hop` forwards through Telos to a third network; `route` swaps what arrives,
+// under the same name on every network.
+export const BRIDGE = {
+  networks: {
+    1: 'Ethereum',
+    56: 'BNB Chain',
+    137: 'Polygon',
+    '1181148696416462999': 'WAX',
+    '4057084141687023600': 'XPR Network',
+    '12439917377594391589': 'Vaulta',
+  },
+  hop: 'hop.alcor',
+  route: 'route.alcor',
+}
 
 // The "Alcor pays CPU" action: exactly the registry's `noop`, no data, signed by the
 // payer alone. Not a signer and not a summary row; anything different is an unknown action.
