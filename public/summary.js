@@ -467,12 +467,12 @@ function bridgeClaim(chain, action) {
 const networkName = (domain) => (Object.hasOwn(BRIDGE.networks, domain) ? BRIDGE.networks[domain] : `network #${domain}`)
 
 // Telos out: `<domain>:<recipient>[:<fee>[:<memo>]]`, the recipient an EVM address or an account.
-function bridgeWithdraw(chain, { to, amount, memo }) {
+function bridgeWithdraw(chain, { from, to, amount, memo }) {
   const [domain, recipient, fee, ...rest] = memo.split(':')
   if (!recipient) return plainTransfer(chain, { to, amount, memo })
 
   const note = fee && fee !== '0' ? `fee ${fee}` : undefined
-  return bridged({ amount, to, note, network: networkName(domain), recipient, memo: rest.join(':') })
+  return bridged(chain, { from, amount, to, note, network: networkName(domain), recipient, memo: rest.join(':') })
 }
 
 // Into Telos from a vault network: `<telos account>[:<memo>]`, or a hop further on.
@@ -482,7 +482,7 @@ function bridgeDeposit(chain, { from, to, amount, memo }) {
   const [recipient, rest] = splitMemo(memo)
   if (!recipient) return plainTransfer(chain, { to, amount, memo })
 
-  return bridged({ amount, to, network: 'Telos', recipient, memo: rest })
+  return bridged(chain, { from, amount, to, network: 'Telos', legs: true, recipient, memo: rest })
 }
 
 // Through Telos to a third network: `hop.alcor:<domain>:<recipient>|<domain>:<refund>[|<memo>]`.
@@ -493,42 +493,72 @@ function bridgeHop(chain, { from, to, amount, memo }) {
   const [refundDomain, refundTo] = splitMemo(refund)
   if (!recipient || !refundTo) return plainTransfer(chain, { to, amount, memo })
 
-  const leg = bridged({ amount, to, note: 'through Telos', network: networkName(domain), recipient, memo: rest.join('|') })
+  const network = networkName(domain)
+  const leg = bridged(chain, { from, amount, to, note: 'through Telos', network, recipient, memo: rest.join('|') })
   if (refundDomain === chain.bridge.domain && refundTo === from) return leg
 
   const text = `If the bridge refuses it, it comes back to ${refundTo} on ${networkName(refundDomain)}, not to ${from} on ${chain.name}.`
   return { ...leg, risks: [...leg.risks, { kind: 'warn', text }] }
 }
 
-// The recipient lives in the memo, so it is shown whole. `route.alcor` swaps on arrival:
-// `<recipient>|<least out>@<contract>|<deadline>`; it pays the bridged token as is when
-// no route gives that much by the deadline.
-function bridged({ amount, to, note, network, recipient, memo }) {
+// The recipient lives in the memo, so it is shown whole. `legs`: whether `route.alcor` on
+// `network` may deliver to another network — only on Telos, where the bridge keeps routes.
+function bridged(chain, { from, amount, to, note, network, legs = false, recipient, memo }) {
   const leg = { title: `Bridge ${amount.symbol} to ${network}`, out: { amount, to, note }, risks: [] }
-  if (recipient !== BRIDGE.route) {
-    const sub = [`on ${network}`, memo ? `memo “${memo}”` : null].filter(Boolean).join(' · ')
-    return { ...leg, rows: [{ dir: 'in', label: 'Arrives at', amount: recipient, sub }] }
-  }
+  if (recipient === BRIDGE.route) return routeSwap(chain, { from, amount, network, legs, memo, leg })
 
-  const [receiver, least, deadline, ...extra] = memo.split('|')
-  const minimum = parseAmountAt(least ?? '')
-  if (!receiver || !minimum || !/^\d{1,12}$/.test(deadline ?? '') || extra.length) {
+  const sub = [`on ${network}`, memo ? `memo “${memo}”` : null].filter(Boolean).join(' · ')
+  return { ...leg, rows: [{ dir: 'in', label: 'Arrives at', amount: recipient, sub }] }
+}
+
+// `route.alcor` swaps on arrival: `<to>|<least out>@<contract>|<deadline>[|<back>]`. `to` gets
+// at least that much; `back` (`to` when left out) gets the token that arrived, as is, when no
+// route gives the least by the deadline.
+function routeSwap(chain, { from, amount, network, legs, memo, leg }) {
+  const [toText, least = '', deadline = '', backText, ...extra] = memo.split('|')
+  const to = routeDestination(toText, network, legs)
+  const back = backText === undefined ? to : routeDestination(backText, network, legs)
+  const minimum = parseAmountAt(least)
+  if (!to || !back || !minimum || !/^\d{1,12}$/.test(deadline) || extra.length) {
     return {
       ...leg,
-      rows: [{ dir: 'in', label: 'Arrives at', amount: recipient, sub: `on ${network}` }],
+      rows: [{ dir: 'in', label: 'Arrives at', amount: BRIDGE.route, sub: `on ${network}` }],
       risks: [{ kind: 'warn', text: 'Alcor does not recognise this swap memo — there is no way to check who receives what.' }],
     }
   }
 
-  const sub = [`on ${network}`, `${minimum.contract} token`, `else ${amount.symbol} if not swapped by ${utcDate(deadline)}`]
+  const by = utcDate(deadline)
+  const sub = [`on ${to.network}`, to.domain ? `bought on ${network} as ${minimum.contract} token` : `${minimum.contract} token`]
+  // The contract before 2026-10-13 swapped a zero least at any price; the current one refunds it.
+  const risks = minimum.units === 0n ? [{ kind: 'danger', text: 'No minimum was set — the swap on arrival may go through at any price.' }] : []
+  if (sameDestination(back, to)) {
+    sub.push(`else ${amount.symbol} if not swapped by ${by}`)
+  } else if (back.domain && back.domain === chain.bridge?.domain && back.recipient === from) {
+    sub.push(`else ${amount.symbol} back to you on ${back.network} if not swapped by ${by}`)
+  } else {
+    const text = `If it is not swapped by ${by}, the ${amount.symbol} goes to ${back.recipient} on ${back.network}, not to ${to.recipient}.`
+    risks.push({ kind: 'warn', text })
+  }
+
   return {
     ...leg,
-    title: `Bridge ${amount.symbol} → ${minimum.symbol} on ${network}`,
-    rows: [{ dir: 'in', label: 'Arrives as at least', amount: formatAmount(minimum), to: receiver, sub: sub.join(' · ') }],
-    risks:
-      minimum.units === 0n ? [{ kind: 'danger', text: 'No minimum was set — the swap on arrival goes through at any price.' }] : [],
+    title: `Bridge ${amount.symbol} → ${minimum.symbol} on ${to.network}`,
+    rows: [{ dir: 'in', label: 'Arrives as at least', amount: formatAmount(minimum), to: to.recipient, sub: sub.join(' · ') }],
+    risks,
   }
 }
+
+// An account on the swap's network or, where `legs`, `<domain>:<recipient>` with no fee.
+function routeDestination(text, network, legs) {
+  const [domain, recipient, ...fee] = text.split(':')
+  if (recipient === undefined) return text ? { network, recipient: text } : null
+  if (!legs || !/^[1-9]\d*$/.test(domain) || !recipient || fee.length) return null
+
+  return { network: networkName(domain), domain, recipient }
+}
+
+// EVM addresses are one address in any case.
+const sameDestination = (a, b) => a.network === b.network && a.recipient.toLowerCase() === b.recipient.toLowerCase()
 
 const utcDate = (seconds) =>
   `${new Date(Number(seconds) * 1000).toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'UTC' })} UTC`
