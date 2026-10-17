@@ -177,9 +177,11 @@ export function chainById(id) {
 export const ENVIRONMENTS = {
   prod: {
     host: 'sign.alcor.exchange',
-    // The legacy UI lives on one subdomain per network it can sign on here.
+    // The legacy UI lives on one subdomain per network it can sign on here;
+    // `app.` is the new one.
     apps: [
       'https://alcor.exchange',
+      'https://app.alcor.exchange',
       'https://wax.alcor.exchange',
       'https://proton.alcor.exchange',
       'https://telos.alcor.exchange',

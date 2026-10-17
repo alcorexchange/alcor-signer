@@ -44,7 +44,7 @@ All four share one passkey and one recovery phrase. EVM networks are planned thr
 
 ## Who can use it
 
-Right now Alcor Signer answers only Alcor Exchange apps: `alcor.exchange` and its network subdomains. A request from any other site is ignored.
+Right now Alcor Signer answers only Alcor Exchange apps: `alcor.exchange`, `app.alcor.exchange` and the network subdomains. A request from any other site is ignored.
 
 Integration for other dApps is planned as a WharfKit wallet plugin. It is not available yet, and this file will describe it when it is.
 
