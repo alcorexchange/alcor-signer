@@ -1,7 +1,7 @@
 // Alcor Signer: an isolated signing origin. Modes:
 //
 //   opened directly  → accounts, signing levels, import, keys
-//   opened by app    → login, finish, enroll, sign, settings, import
+//   opened by app    → login, finish, create, enroll, sign, settings, import
 //   iframe in app    → Auto sign: sign without a screen, or refuse
 //
 // Nothing from the app is imported here, and cannot be: it is another origin.
@@ -2519,6 +2519,116 @@ function handKeysScreen({ passkey, owner, from, reply, back }) {
   })
 }
 
+// `create`: a signed-in person opens one more account under a passkey they already have.
+// Nothing is signed: the reply is the passkey for active and the next free owner key from
+// its words, so the same 24 words bring back every account the passkey made. The app pays
+// the factory from the account it is signed in with.
+function createScreen({ request, reply }) {
+  const out = stack([])
+  const from = appName(request.appOrigin)
+  const passkeys = loadPasskeys()
+  const cancel = cancelLink(reply)
+  const again = () => createScreen({ request, reply })
+  const title = () => ['New ', accent(chain.name), ' account']
+
+  const send = (work, passkey, owner) => {
+    const { publicKey, credentialId } = passkey
+    replyAndClose(reply, work, { ok: true, publicKey, credentialId, account: null, owner, level: null })
+  }
+
+  // A used index would share an owner key between accounts: the first free one, asked of the chain.
+  const use = (passkey) =>
+    attempt({
+      title: title(),
+      sub: `Requested by ${from}`,
+      busy: 'Confirm with your passkey — picking the owner key',
+      back: again,
+      cancel,
+      run: async (work) => {
+        const root = await rootFromPasskey(passkey)
+        try {
+          send(work, passkey, (await nextFreeIndex(root, chain)).publicKey)
+        } finally {
+          forgetRoot(root)
+        }
+      },
+    })
+
+  // A passkey from elsewhere brings its owner from the same touch; a node that did not answer costs one more.
+  const findOther = () => findKeyFlow(out, (passkey, owner) => (owner ? send(out, passkey, owner) : use(passkey)), { ownerOn: chain })
+
+  // A brand-new passkey owns nothing anywhere: slot 0. Its words are asked for once the account holds funds.
+  const createNew = () =>
+    createKeyFlow(
+      out,
+      (passkey, root) => {
+        try {
+          send(out, passkey, ownerPublicKey(root, chain, 0))
+        } catch (error) {
+          out.replaceChildren(failure(error))
+        } finally {
+          forgetRoot(root)
+        }
+      },
+      { words: false }
+    )
+
+  if (!passkeys.length) {
+    screen({
+      body: [
+        state({
+          icon: ICONS.key,
+          title: `New ${chain.name} account`,
+          text: 'Your passkey syncs through iCloud Keychain or Google Password Manager — use it, or create one.',
+        }),
+        out,
+      ],
+      actions: [button('Use my passkey', findOther, 'primary'), button('Create a passkey', createNew)],
+      links: [cancel],
+    })
+    return
+  }
+
+  // The app may name the passkey of the account it is signed in with; only a key on this device counts.
+  const primary = findPasskey(String(request.publicKey ?? '')) ?? passkeys[0]
+  const others = passkeys.filter((passkey) => passkey !== primary)
+
+  const main = () =>
+    screen({
+      body: [
+        pageTitle(title(), `${from} opens it with this passkey · nothing is signed here`),
+        card([keyTile(primary)]),
+        note('Owner comes from the same 24 words as your other accounts — one backup for all of them.'),
+        out,
+      ],
+      actions: [button('Continue with passkey', () => use(primary), 'primary')],
+      links: [['Use a different key', alternatives], cancel],
+    })
+
+  const alternatives = () =>
+    screen({
+      body: [
+        pageTitle('Use a different key', `For a new ${chain.name} account`),
+        others.length ? section('on this device', [card(others.map((passkey) => keyTile(passkey, () => use(passkey))))]) : null,
+        section('or', [
+          options([
+            tile({
+              icon: ICONS.phone,
+              title: 'Use another passkey',
+              sub: 'Another key on this device, a synced one, or scan with your phone',
+              aside: icon(ICONS.chevron, 14),
+              onclick: findOther,
+            }),
+          ]),
+        ]),
+        out,
+      ],
+      back: main,
+    })
+
+  main()
+}
+
 // `backup`: the app's account holds funds now, and its words were never shown — an
 // account opened by its first deposit skips them at creation. Nothing is signed; the
 // reply says only that the person ticked "saved", never the words.
@@ -3353,6 +3463,7 @@ if (isEmbedded()) {
     else if (incoming.request.kind === 'finish') finishScreen(incoming)
     else if (incoming.request.kind === 'backup') backupScreen(incoming)
     else if (incoming.request.kind === 'enroll') enrollScreen(incoming)
+    else if (incoming.request.kind === 'create') createScreen(incoming)
     else if (incoming.request.kind === 'settings') settingsScreen(incoming)
     else if (incoming.request.kind === 'import') importRequest(incoming)
     else await confirmScreen(incoming)
