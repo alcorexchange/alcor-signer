@@ -7,7 +7,8 @@ export const PINNED_ABIS = {
     "eosio": "fccb1a515b98d2232a1227279666d9a3fcd41f67fafa0d75212cc0a282564361",
     "eosio.token": "fb8452c70aa203505592aef25b696acaa1aee58805888cc9aae024b4c03af91e",
     "swap.alcor": "7252a6b47a0484fae77ee3408aec806102270c4b2a7b5d19eabe0fb7ce1d1c9a",
-    "eostokensdex": "8b43316996c04b0464e3042192dcc4c55a1dea6bef05349e10d434cb648e1c15"
+    "eostokensdex": "8b43316996c04b0464e3042192dcc4c55a1dea6bef05349e10d434cb648e1c15",
+    "cpu.alcor": "d32330e661921042efa7f2090430fb822bd8ace2f1c01748c0fe0d56a86f25a7"
   },
   "wax": {
     "eosio": "a1683bbeb3418ad502aac045372850b5fcfa0aef494795ac70228f01433273d6",

@@ -21,6 +21,8 @@ export const CHAINS = {
     systemToken: { symbol: 'TLOS', contract: 'eosio.token' },
     // Decides which decoder reads an action (summary.js); a swap sent elsewhere isn't a swap.
     alcor: { swap: 'swap.alcor', spot: 'eostokensdex' },
+    // Alcor pays CPU, as on WAX — see there.
+    cpuPayer: { contract: 'cpu.alcor', action: 'noop', actor: 'cpu.alcor', permission: 'bw' },
     // The bridge hub (summary.js). Proof contracts are listed by exact name, not by the
     // `.alcor` suffix: one redeployed under a new name reads as unknown until added here.
     bridge: {
