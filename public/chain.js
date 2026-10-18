@@ -34,6 +34,7 @@ export const CHAINS = {
         'wax.lc.alcor': 'WAX',
         'xpr.lc.alcor': 'XPR Network',
         'vlt.lc.alcor': 'Vaulta',
+        'sui.lc.alcor': 'Sui',
       },
       gateways: {
         'eth.g.alcor': 'Ethereum',
@@ -42,6 +43,7 @@ export const CHAINS = {
         'wax.g.alcor': 'WAX',
         'xpr.g.alcor': 'XPR Network',
         'vlt.g.alcor': 'Vaulta',
+        'sui.g.alcor': 'Sui',
       },
     },
     // Network index in the key path from the 24 words (ADR-0010 §3). NEVER change it:
@@ -123,6 +125,7 @@ export const BRIDGE = {
     '1181148696416462999': 'WAX',
     '4057084141687023600': 'XPR Network',
     '12439917377594391589': 'Vaulta',
+    '3856007665771390095': 'Sui',
   },
   hop: 'hop.alcor',
   route: 'route.alcor',
