@@ -89,6 +89,7 @@ import {
 import { k1PublicKey } from './k1.js'
 import { isPasskeyOf } from './webauthn.js'
 import {
+  ROOT_SALT,
   forgetFoundKeys,
   forgetRoot,
   nextFreeIndex,
@@ -96,8 +97,10 @@ import {
   ownerPublicKey,
   rootAccounts,
   rootFromPasskey,
+  rootFromSecret,
   rootFromWords,
 } from './root.js'
+import { assertWithPrf } from './passkey.js'
 import { discoverPasskey } from './discover.js'
 import { PrivateKey } from './vendor/wharfkit.js'
 import {
@@ -2355,12 +2358,37 @@ function loginScreen(incoming) {
   }
 
   // The user picks the account, not the app: one passkey can sign for several.
-  // The level is best-effort.
-  const signIn = async (entry) => {
-    const level = await signingLevel(entry).catch(() => null)
-    const { publicKey, credentialId } = entry.passkey
-    replyAndClose(reply, out, { ok: true, publicKey, credentialId, account: entry.name, level })
-  }
+  // Who else controls it is shown before the app gets it. The level is best-effort.
+  const signIn = (entry) =>
+    attempt({
+      title: `Sign in to ${from}`,
+      sub: chain.name,
+      busy: `Checking who controls ${entry.name}`,
+      back: again,
+      cancel,
+      run: async (work) => {
+        const { authority, strangers } = await whoElseControls(entry, work)
+        if (strangers.length) {
+          const yes = await confirmDialog({
+            icon: ICONS.alert,
+            tone: 'amber',
+            title: `${entry.name} is not only yours`,
+            text:
+              'Besides your passkey and your 24 words, these control the account: whoever holds them can take ' +
+              'everything on it. Continue only if each one is yours — a wallet or device you linked.',
+            details: consequences(strangers),
+            confirm: 'Continue anyway',
+            cancel: 'Back',
+          })
+          if (!yes) return again()
+        }
+        rememberValue('trusted', accountId(entry.chain.chainId, entry.name), authority)
+
+        const level = await signingLevel(entry).catch(() => null)
+        const { publicKey, credentialId } = entry.passkey
+        replyAndClose(reply, work, { ok: true, publicKey, credentialId, account: entry.name, level })
+      },
+    })
 
   const draw = (label, rows, actions = []) =>
     screen({
@@ -2433,6 +2461,60 @@ function loginScreen(incoming) {
     },
     (error) => draw('your account', [failure(error)], [button('Try again', again, 'primary')])
   )
+}
+
+/**
+ * Who besides the person controls an account they are signing in to.
+ *
+ * Anyone can put our public key on an account of theirs, and the account factory's memo
+ * shows our keys before the account exists: our passkey on active under a stranger's owner
+ * looks on chain just like an account linked from Anchor. Only the person knows a linked
+ * wallet is theirs, and only the 24 words tell an owner key of ours from a stranger's. So
+ * keys this browser doesn't hold cost one touch, and whatever is still not ours after it
+ * is shown. An authority checked once is remembered until it changes.
+ *
+ * @returns {Promise<{ authority: string, strangers: string[] }>} `strangers` for people
+ */
+async function whoElseControls(entry, work) {
+  const permissions = await agreedPermissions(entry.chain, entry.name)
+  const authority = JSON.stringify(permissions)
+  if (cachedValue('trusted', accountId(entry.chain.chainId, entry.name)) === authority) return { authority, strangers: [] }
+
+  const ours = await ourKeys()
+  const unknown = permissions.flatMap((permission) => permission.keys.map(({ key }) => key)).filter((key) => !ours.has(key))
+  if (unknown.length) for (const key of await keysFromPasskey(entry, new Set(unknown), work)) ours.add(key)
+
+  const strangers = permissions.flatMap((permission) => othersOn(permission, ours).map((other) => `${permission.name}: ${other.text}`))
+  return { authority, strangers }
+}
+
+/**
+ * Which of `keys` come from this passkey: owner keys of its 24 words, or fast sign slots of
+ * this account, made on another device. One touch gives both, through two PRF salts.
+ */
+async function keysFromPasskey(entry, keys, work) {
+  work.replaceChildren(status('Confirm with your passkey — it checks the keys on the account against your 24 words'))
+  const fastScope = scopeOf(entry.chain, entry.name, entry.chain.permission)
+  const {
+    secrets: [rootSecret, fastSecret],
+  } = await assertWithPrf(entry.passkey, [ROOT_SALT, hotSalt(fastScope)])
+  let root = null
+
+  try {
+    root = rootFromSecret(rootSecret)
+    const fast = new Set((await hotCandidates(fastSecret)).map((candidate) => candidate.publicKey))
+    return [...keys].filter((key) => fast.has(key) || isOwnerKeyOf(root, entry.chain, key))
+  } finally {
+    rootSecret.fill(0)
+    fastSecret.fill(0)
+    forgetRoot(root)
+  }
+}
+
+function isOwnerKeyOf(root, on, publicKey) {
+  const key = publicKey.startsWith('PUB_K1_') ? ownerKeyOf(root, on, publicKey) : null
+  key?.privateKey.data.array.fill(0)
+  return Boolean(key)
 }
 
 const pick = ({ face, title, sub, onclick }) =>
