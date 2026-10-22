@@ -276,7 +276,16 @@ export async function permissionAuthority(chain, account, permission) {
  * all that answer must agree.
  */
 export async function agreedAuthority(chain, account, permission) {
-  const results = await Promise.allSettled(chain.rpcs.map((url) => authorityFrom(clientFor(url), account, permission)))
+  return agreed(chain, account, `${account}@${permission}`, (client) => authorityFrom(client, account, permission))
+}
+
+// Every permission of the account, as every node reports it: for deciding whose the account is.
+export async function agreedPermissions(chain, account) {
+  return agreed(chain, account, account, (client) => permissionsFrom(client, account))
+}
+
+async function agreed(chain, account, subject, read) {
+  const results = await Promise.allSettled(chain.rpcs.map((url) => read(clientFor(url))))
   const answers = results.filter((result) => result.status === 'fulfilled').map((result) => result.value)
 
   if (answers.length < 2) {
@@ -284,7 +293,7 @@ export async function agreedAuthority(chain, account, permission) {
   }
   if (new Set(answers.map((answer) => JSON.stringify(answer))).size > 1) {
     throw new Error(
-      `${chain.name} nodes disagree about who controls ${account}@${permission}. Nothing was signed — ` +
+      `${chain.name} nodes disagree about who controls ${subject}. Nothing was signed — ` +
         'if you just changed it, wait a few seconds and try again.'
     )
   }
@@ -296,8 +305,15 @@ export async function agreedAuthority(chain, account, permission) {
 async function authorityFrom(client, account, permission) {
   const info = await client.v1.chain.get_account(account)
   const found = (info.permissions ?? []).find((entry) => String(entry.perm_name) === permission)
-  if (!found) return null
+  return found ? authorityOf(found) : null
+}
 
+async function permissionsFrom(client, account) {
+  const info = await client.v1.chain.get_account(account)
+  return (info.permissions ?? []).map((entry) => ({ name: String(entry.perm_name), ...authorityOf(entry) }))
+}
+
+function authorityOf(found) {
   const auth = found.required_auth
   return {
     parent: String(found.parent),
@@ -310,6 +326,20 @@ async function authorityFrom(client, account, permission) {
     })),
     waits: (auth.waits ?? []).map((entry) => ({ wait_sec: Number(entry.wait_sec), weight: Number(entry.weight) })),
   }
+}
+
+// Whether `key` alone is the authority: nothing else on it signs, or shares the signing.
+// Our key next to anyone else's is no proof the permission is ours.
+export function onlyKey(authority, key) {
+  const [entry] = authority?.keys ?? []
+  return (
+    authority?.threshold === 1 &&
+    authority.keys.length === 1 &&
+    authority.accounts.length === 0 &&
+    authority.waits.length === 0 &&
+    entry.key === key &&
+    entry.weight === 1
+  )
 }
 
 // Whether one key can sign for `actor@permission`. A key in IndexedDB isn't proof the chain accepts it.

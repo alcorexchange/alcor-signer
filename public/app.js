@@ -103,6 +103,7 @@ import { PrivateKey } from './vendor/wharfkit.js'
 import {
   accountsForKey,
   agreedAuthority,
+  agreedPermissions,
   assertAllowedFromApp,
   balanceFor,
   buildTransaction,
@@ -115,6 +116,7 @@ import {
   keySatisfies,
   accountsEverywhere,
   editKeysAction,
+  onlyKey,
 } from './sign.js'
 import { describe, isAlcorTrade, summarize } from './summary.js'
 
@@ -2648,6 +2650,24 @@ function backupScreen({ request, reply }) {
   })
 }
 
+/**
+ * Whether a factory account is ours alone: owner and active and nothing else, owner the
+ * owner key alone, active the owner key alone (as the digits-only memo opens it) or the
+ * passkey alone (finished before). The memo is public before the deposit lands, so anyone
+ * can open an account with our key on it next to their own, or under their own owner.
+ */
+function onlyOurs(permissions, owner, passkey) {
+  const ownerAuth = permissions.find((entry) => entry.name === 'owner')
+  const active = permissions.find((entry) => entry.name === 'active')
+  return (
+    permissions.length === 2 &&
+    ownerAuth?.parent === '' &&
+    active?.parent === 'owner' &&
+    onlyKey(ownerAuth, owner) &&
+    (onlyKey(active, owner) || onlyKey(active, passkey))
+  )
+}
+
 // `finish`: an account the app opened with the owner key alone — the account factory's
 // digits-only memo, for exchanges, carries one K1 for both owner and active. The owner
 // key, derived from the root again, puts the passkey on active in its place; after that
@@ -2695,17 +2715,17 @@ function finishScreen({ request, reply }) {
       back: () => finishScreen({ request, reply }),
       cancel,
       run: async (work) => {
-        const [ownerAuth, active] = await Promise.all([
-          agreedAuthority(chain, name, 'owner'),
-          agreedAuthority(chain, name, 'active'),
-        ])
-        if (!ownerAuth?.keys.some((entry) => entry.key === owner)) {
-          throw new Error(`${name} on ${chain.name} is not owned by ${shortKey(owner)}`)
+        const permissions = await agreedPermissions(chain, name)
+        const active = permissions.find((entry) => entry.name === 'active')
+        if (!onlyOurs(permissions, owner, passkey.publicKey)) {
+          throw new Error(
+            `${name} on ${chain.name} is not only yours: a key or account other than ${shortKey(owner)} ` +
+              'and your passkey can control it, and would take whatever you put there. Nothing was signed.'
+          )
         }
-        if (!active) throw new Error(`${name} has no active permission on ${chain.name}`)
 
         // Already there when an earlier window finished it and closed before replying.
-        if (!active.keys.some((entry) => entry.key === passkey.publicKey)) await putPasskeyOnActive(work, active)
+        if (!onlyKey(active, passkey.publicKey)) await putPasskeyOnActive(work, active)
 
         // A new account has no browser key yet: every signature is a passkey one.
         const { publicKey, credentialId } = passkey
