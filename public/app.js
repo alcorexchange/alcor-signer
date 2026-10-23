@@ -119,6 +119,7 @@ import {
   keySatisfies,
   accountsEverywhere,
   editKeysAction,
+  deletePermissionsActions,
   onlyKey,
 } from './sign.js'
 import { describe, isAlcorTrade, summarize } from './summary.js'
@@ -907,6 +908,9 @@ function signingPanel(entry, { onState, onRemove, onExport }) {
   const id = accountId(entry.chain.chainId, entry.name)
   const known = cachedValue('levels', id)
   let level = known ?? 'passkey'
+  // R1 keys on chain while this browser signs with the passkey: another device's Fast sign,
+  // or an earlier one IndexedDB lost. Read from one node — removing them reads all.
+  let stray = []
 
   const render = (busyText) => {
     if (!busyText) onState(level)
@@ -920,10 +924,14 @@ function signingPanel(entry, { onState, onRemove, onExport }) {
         busyText ? el('span', { className: 'spinner' }) : null,
         el('span', { textContent: busyText ?? LEVEL_TEXT[level] }),
       ]),
+      !busyText && level === 'passkey' && stray.length
+        ? banner('warn', `Browser keys still sign for this account without the passkey: ${stray.map(shortKey).join(', ')}`)
+        : null,
       busyText
         ? null
         : el('div', { className: 'level-actions' }, [
             level !== 'passkey' ? inlineAction('Replace browser key', ICONS.swap, () => rotate()) : null,
+            level === 'passkey' && stray.length ? inlineAction('Remove browser keys', ICONS.ban, () => removeStray()) : null,
             exporter(),
             remove(),
           ]),
@@ -938,8 +946,13 @@ function signingPanel(entry, { onState, onRemove, onExport }) {
     if (!quiet) render('Checking on chain…')
 
     let next
+    let left = []
     try {
       next = await signingLevel(entry)
+      if (next === 'passkey') {
+        const notOurs = cachedValue('notOurs', id) ?? []
+        left = keysOn(await permissionAuthority(entry.chain, entry.name, entry.permission)).filter((key) => isBrowserKey(key) && !notOurs.includes(key))
+      }
     } catch {
       // The node did not answer: show what we have, don't cache a guess.
       if (mine === generation && !quiet) render()
@@ -948,8 +961,9 @@ function signingPanel(entry, { onState, onRemove, onExport }) {
 
     if (mine !== generation) return
     rememberValue('levels', id, next)
-    if (!quiet || next !== level) {
+    if (!quiet || next !== level || String(left) !== String(stray)) {
       level = next
+      stray = left
       render()
     }
   }
@@ -1017,6 +1031,18 @@ function signingPanel(entry, { onState, onRemove, onExport }) {
     )
   }
 
+  const removeStray = () =>
+    run(
+      'Removing — confirm with your passkey',
+      async () => {
+        const txid = await disableFastSign(entry)
+        stray = []
+        return txid
+      },
+      done('Every signature asks for your passkey again'),
+      'passkey'
+    )
+
   const rotate = () =>
     run('Replacing the key — confirm with your passkey', () => rotateFastSign(entry), done('This browser has a new key — the old one no longer works'), level)
 
@@ -1048,11 +1074,11 @@ async function signingLevel(entry) {
 // not bring the stolen key back. Slot numbers only — nothing here can sign.
 const slotsId = (scope) => `${scope.chainId}:${scope.account}@${scope.permission}`
 const retiredSlots = (scope) => cachedValue('retired', slotsId(scope)) ?? []
-const retireSlot = (scope, n) => rememberValue('retired', slotsId(scope), [...new Set([...retiredSlots(scope), n])])
+const retireSlots = (scope, slots) => rememberValue('retired', slotsId(scope), [...new Set([...retiredSlots(scope), ...slots])])
 
 // Random, never a retired one while any other is left; recovery checks every slot.
-function randomSlot(scope, except = null) {
-  const all = [...Array(HOT_KEY_SLOTS).keys()].filter((n) => n !== except)
+function randomSlot(scope, except = []) {
+  const all = [...Array(HOT_KEY_SLOTS).keys()].filter((n) => !except.includes(n))
   const fresh = all.filter((n) => !retiredSlots(scope).includes(n))
   const free = fresh.length ? fresh : all
   return free[crypto.getRandomValues(new Uint32Array(1))[0] % free.length]
@@ -1116,18 +1142,25 @@ async function rotateFastSign(entry) {
   const secret = await hotSecret(entry.passkey, scope)
 
   try {
-    const next = (await hotCandidates(secret))[randomSlot(scope, current.n)]
-    // Every Fast sign key goes, not only the one this browser remembers: a slot left
+    const candidates = await hotCandidates(secret)
+    // Every slot of this passkey goes, not only the one this browser remembers: a slot left
     // from an earlier failure or another browser would keep working after "replaced".
-    const stale = unique([current.publicKey, ...keysOn(auth).filter(isFastSignKey)])
+    const stale = slotsOn(auth, candidates)
+    const gone = [current.n, ...stale.map((slot) => slot.n)]
+    const next = candidates[randomSlot(scope, gone)]
     const txid = await submit(
       entry.chain,
       entry.passkey,
-      [editKeysAction(entry.name, entry.permission, auth, { add: [next.publicKey], remove: stale })],
+      [
+        editKeysAction(entry.name, entry.permission, auth, {
+          add: [next.publicKey],
+          remove: unique([current.publicKey, ...stale.map((slot) => slot.publicKey)]),
+        }),
+      ],
       { known: [next.publicKey] }
     )
 
-    retireSlot(scope, current.n)
+    retireSlots(scope, gone)
     await adoptHotKey(secret, scope, next.n, { keepAuto: true })
     return txid
   } finally {
@@ -1135,25 +1168,58 @@ async function rotateFastSign(entry) {
   }
 }
 
-/** @returns {Promise<string | null>} txid, or null when the key was no longer on chain */
+/**
+ * Every slot of this passkey on the permission, not only this browser's: "every signature
+ * asks for your passkey" must hold for a slot left behind by a failure or another browser,
+ * and the chain is read even with nothing in IndexedDB. Another wallet's R1 key stays.
+ *
+ * @returns {Promise<string | null>} txid, or null when no slot was on chain
+ * @throws when a browser key stays that isn't this passkey's
+ */
 async function disableFastSign(entry) {
   const scope = scopeOfEntry(entry)
   const key = await loadHotKey(scope)
-  const auth = key ? await agreedAuthority(entry.chain, entry.name, entry.permission) : null
+  const auth = await agreedAuthority(entry.chain, entry.name, entry.permission)
 
-  // Every Fast sign key on the permission, not only this browser's: "every signature asks
-  // for your passkey" must hold for a slot left behind by a failure or another browser.
-  const stale = keysOn(auth).filter(isFastSignKey)
+  // No R1 key on chain: no slot of ours to find, so no touch for it.
+  const stale = keysOn(auth).some(isBrowserKey) ? await fastSlotsOn(entry.passkey, scope, auth) : []
 
   let txid = null
   if (stale.length) {
-    txid = await submit(entry.chain, entry.passkey, [editKeysAction(entry.name, entry.permission, auth, { remove: stale })])
+    const remove = stale.map((slot) => slot.publicKey)
+    txid = await submit(entry.chain, entry.passkey, [editKeysAction(entry.name, entry.permission, auth, { remove })])
   }
 
   // Forget it here either way: a key off the account but still in the browser looks usable.
-  if (key) retireSlot(scope, key.n)
+  retireSlots(scope, [...(key ? [key.n] : []), ...stale.map((slot) => slot.n)])
   await forgetHotKey(scope)
+
+  const ours = new Set(stale.map((slot) => slot.publicKey))
+  const kept = keysOn(auth).filter((onAccount) => isBrowserKey(onAccount) && !ours.has(onAccount))
+  // Checked against this passkey's slots: the panel stops offering to remove them.
+  if (stale.length || kept.length) rememberValue('notOurs', accountId(entry.chain.chainId, entry.name), kept)
+  if (kept.length) {
+    throw new Error(
+      `${kept.map(shortKey).join(', ')} still signs for ${entry.name}: it was not made by this passkey, ` +
+        'so another wallet or device added it. Remove it there.'
+    )
+  }
   return txid
+}
+
+// Fast sign slots of this passkey among the keys on a permission: exact keys, not a prefix.
+const slotsOn = (auth, candidates) => {
+  const onChain = new Set(keysOn(auth))
+  return candidates.filter((candidate) => onChain.has(candidate.publicKey))
+}
+
+async function fastSlotsOn(passkey, scope, auth) {
+  const secret = await hotSecret(passkey, scope)
+  try {
+    return slotsOn(auth, await hotCandidates(secret))
+  } finally {
+    secret.fill(0)
+  }
 }
 
 /**
@@ -1552,11 +1618,31 @@ async function attachRecovery(entry, allocate, out) {
   }
 }
 
-// Keys only Signer makes: passkeys of this origin and Fast sign keys (`PUB_R1_`).
-const isFastSignKey = (key) => key.startsWith('PUB_R1_')
+// Fast sign keys are `PUB_R1_`, but so is a device key of another wallet: the prefix is a
+// key type. Only the slots of a passkey (`slotsOn`) tell ours apart, and that needs the passkey.
+const isBrowserKey = (key) => key.startsWith('PUB_R1_')
 const isOurPasskey = (key) => isPasskeyOf(key, location.hostname)
 const keysOn = (auth) => auth?.keys.map((entry) => entry.key) ?? []
 const unique = (keys) => [...new Set(keys.filter(Boolean))]
+
+const BASE_PERMISSIONS = new Set(['owner', 'active'])
+
+/**
+ * Permissions besides owner and active, one group per permission right under them, with
+ * everything under it children first: removing one takes its subtree, or the chain refuses.
+ * Signer never makes these, but whoever holds active can: a stolen device leaves one linked
+ * to `transfer`, and other services leave theirs (WAX boost: `paybw` → `boost.wax::noop`).
+ *
+ * @returns {{ name: string, parent: string, permissions: object[] }[]}
+ */
+function otherPermissions(permissions) {
+  const under = (parent) => permissions.filter((permission) => permission.parent === parent)
+  const subtree = (permission) => [...under(permission.name).flatMap(subtree), permission]
+
+  return permissions
+    .filter((permission) => !BASE_PERMISSIONS.has(permission.name) && BASE_PERMISSIONS.has(permission.parent))
+    .map((permission) => ({ name: permission.name, parent: permission.parent, permissions: subtree(permission) }))
+}
 
 /**
  * Move an account to a new passkey and root (ADR-0010 §8), one transaction:
@@ -1564,15 +1650,25 @@ const unique = (keys) => [...new Set(keys.filter(Boolean))]
  *   active: + new passkey; − old passkey and every Fast sign key
  *   owner:  + new root key; − old root key and old passkey
  *
- * Fast sign keys go from every browser: they were made from the old passkey. `lost`
- * (restore): every passkey of this origin goes too, so a lost or stolen device keeps
- * nothing; on replace the other passkeys stay. Owner changes only when we sign as owner;
- * a linked account (owner is another wallet) only gets the new passkey on active.
+ * Fast sign keys go from every browser: they were made from the old passkey, and without
+ * it they can't be told from another wallet's R1 key, so every R1 key goes. `lost`
+ * (restore): every passkey of this origin goes too, and the other permissions the person
+ * ticked (`others.remove`); the rest stays. `others.seen` is what the screen listed: a
+ * permission added since then stops the move. On replace the other passkeys stay. Owner
+ * changes only when we sign as owner; a linked account (owner is another wallet) only gets
+ * the new passkey on active.
  *
- * @param {{ chain, name: string, oldOwnerKey?: object, oldPasskey?: object, newPasskey, owners: ReturnType<typeof ownerSlots>, lost?: boolean }} move
+ * @param {{ chain, name: string, oldOwnerKey?: object, oldPasskey?: object, newPasskey, owners: ReturnType<typeof ownerSlots>, lost?: boolean, others?: { seen: string, remove: Set<string> } }} move
  */
-async function moveAccount({ chain: on, name, oldOwnerKey, oldPasskey, newPasskey, owners, lost = false }) {
-  const [owner, active] = await Promise.all([agreedAuthority(on, name, 'owner'), agreedAuthority(on, name, 'active')])
+async function moveAccount({ chain: on, name, oldOwnerKey, oldPasskey, newPasskey, owners, lost = false, others = null }) {
+  const permissions = await agreedPermissions(on, name)
+  const [owner, active] = ['owner', 'active'].map((level) => permissions.find((permission) => permission.name === level) ?? null)
+
+  const groups = otherPermissions(permissions)
+  if (lost && JSON.stringify(groups) !== others?.seen) {
+    throw new Error(`${name} on ${on.name}: its access changed since it was listed. Nothing was signed — restore again to see it.`)
+  }
+  const dropped = lost ? groups.filter((group) => others.remove.has(group.name)) : []
 
   const has = (auth, key) => Boolean(key && auth?.keys.some((entry) => entry.key === key))
   const signer = oldOwnerKey && has(owner, oldOwnerKey.publicKey)
@@ -1584,10 +1680,14 @@ async function moveAccount({ chain: on, name, oldOwnerKey, oldPasskey, newPasske
         : null
 
   if (!signer) throw new Error(`${name} on ${on.name}: nothing here can sign for it any more`)
+  if (dropped.length && signer.by !== 'owner') {
+    throw new Error(`${name} on ${on.name}: only its owner can remove ${dropped.map((group) => group.name).join(', ')}`)
+  }
 
-  const revoked = (key) => isFastSignKey(key) || (lost && isOurPasskey(key))
+  const revoked = (key) => isBrowserKey(key) || (lost && isOurPasskey(key))
 
   const actions = [
+    ...deletePermissionsActions(name, dropped.flatMap((group) => group.permissions)),
     editKeysAction(name, 'active', active, {
       add: [newPasskey.publicKey],
       remove: unique([oldPasskey?.publicKey, ...keysOn(active).filter(revoked)]),
@@ -1641,6 +1741,7 @@ async function moveAll(accounts, { oldPasskey, newPasskey, newRoot, lost = false
         newPasskey,
         owners,
         lost,
+        others: entry.others,
       })
       results.push({ entry, ...moved })
     } catch (error) {
@@ -1835,6 +1936,26 @@ function mergeAccounts(fromRoot, fromPasskey) {
   return [...byId.values()]
 }
 
+// One permission and everything under it: what it can sign and who holds it, from chain data.
+function accessRow(entry, group, onchange) {
+  const links = group.permissions.flatMap((permission) => permission.links)
+  const holders = group.permissions.flatMap((permission) => [
+    ...permission.keys.map(({ key }) => shortKey(key)),
+    ...permission.accounts.map(({ permission: level }) => `${level.actor}@${level.permission}`),
+  ])
+  const below = group.permissions.slice(0, -1).map((permission) => permission.name)
+
+  const sub = [
+    entry.chain.name,
+    links.length ? `can sign ${links.map(linkText).join(', ')}` : 'can sign no action yet',
+    holders.length ? `held by ${holders.join(', ')}` : null,
+    below.length ? `with ${below.join(', ')} under it` : null,
+  ]
+  return checkbox(`Remove ${entry.name} · ${group.name}`, onchange, { sub: sub.filter(Boolean).join(' · ') })
+}
+
+const linkText = (link) => (link.action ? `${link.account} ${link.action}` : `${link.account} (any action)`)
+
 function restoreScreen() {
   const out = stack([])
   const input = secretInput({ placeholder: '24 words, separated by spaces', multiline: true })
@@ -1884,6 +2005,26 @@ function restoreScreen() {
         return
       }
 
+      // What the screen lists is what the move checks: access added after it stops that account.
+      out.replaceChildren(status('Checking who else has access'))
+      const access = await Promise.all(accounts.map((entry) => agreedPermissions(entry.chain, entry.name)))
+      accounts = accounts.map((entry, i) => ({
+        ...entry,
+        others: { seen: JSON.stringify(otherPermissions(access[i])), remove: new Set() },
+      }))
+      out.replaceChildren()
+
+      const browserKeys = accounts.flatMap((entry, i) =>
+        unique(access[i].filter((permission) => BASE_PERMISSIONS.has(permission.name)).flatMap(keysOn))
+          .filter(isBrowserKey)
+          .map((key) => `${entry.name} · ${entry.chain.name} · ${shortKey(key)}`)
+      )
+      const accessRows = accounts.flatMap((entry, i) =>
+        otherPermissions(access[i]).map((group) =>
+          accessRow(entry, group, (checked) => (checked ? entry.others.remove.add(group.name) : entry.others.remove.delete(group.name)))
+        )
+      )
+
       const move = (next, newRoot, list) => {
         const finish = () => {
           forgetOld()
@@ -1913,9 +2054,21 @@ function restoreScreen() {
           card(accounts.map((entry) => tile({ icon: ICONS.user, tone: 'mint', title: entry.name, sub: entry.chain.name }))),
           ...failed.map((name) => banner('warn', `${name} did not answer — its accounts are not listed.`)),
           consequences([
-            'Every Alcor Signer passkey and Fast sign key on them is removed: a lost device keeps nothing.',
-            'Keys of other wallets stay as they are.',
+            'Every Alcor Signer passkey and browser key on them is removed.',
+            browserKeys.length ? 'Keys of other wallets stay as they are, except the browser keys below.' : 'Keys of other wallets stay as they are.',
           ]),
+          browserKeys.length
+            ? section('browser keys removed', [
+                consequences(browserKeys),
+                note('Without the lost passkey a Fast sign key can’t be told from another wallet’s device key, so all of them go. If one is another wallet’s, add it there again.'),
+              ])
+            : null,
+          accessRows.length
+            ? section('other access', [
+                banner('warn', 'Anyone who had your device could have added these to move your tokens, and other apps add their own. Tick each one you don’t recognise: it is removed with the move. The rest stays.'),
+                el('div', { className: 'checks' }, accessRows),
+              ])
+            : null,
           out,
         ],
         actions: [button('Create the new key', () => createKeyFlow(out, (next, newRoot) => move(next, newRoot, accounts)), 'primary')],

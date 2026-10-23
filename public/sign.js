@@ -308,9 +308,15 @@ async function authorityFrom(client, account, permission) {
   return found ? authorityOf(found) : null
 }
 
+// With links: what each one signs is part of whose the account is.
 async function permissionsFrom(client, account) {
   const info = await client.v1.chain.get_account(account)
-  return (info.permissions ?? []).map((entry) => ({ name: String(entry.perm_name), ...authorityOf(entry) }))
+  return (info.permissions ?? []).map((entry) => ({
+    name: String(entry.perm_name),
+    ...authorityOf(entry),
+    // No action: the link covers the whole contract.
+    links: (entry.linked_actions ?? []).map((link) => ({ account: String(link.account), action: link.action ? String(link.action) : '' })),
+  }))
 }
 
 function authorityOf(found) {
@@ -446,6 +452,26 @@ export function editKeysAction(account, permission, authority, { add = [], remov
       auth: { threshold: authority.threshold, keys, accounts: authority.accounts, waits: authority.waits },
     },
   }
+}
+
+/**
+ * Take permissions off an account: links first, then the permission. The chain deletes
+ * neither a linked permission nor a parent of another, so `permissions` go children first.
+ *
+ * @param {{ name: string, links: { account: string, action: string }[] }[]} permissions
+ */
+export function deletePermissionsActions(account, permissions, by = 'owner') {
+  const authorization = [{ actor: account, permission: by }]
+
+  return permissions.flatMap((permission) => [
+    ...permission.links.map((link) => ({
+      account: 'eosio',
+      name: 'unlinkauth',
+      authorization,
+      data: { account, code: link.account, type: link.action },
+    })),
+    { account: 'eosio', name: 'deleteauth', authorization, data: { account, permission: permission.name } },
+  ])
 }
 
 const KEY_ORDER = { K1: 0, R1: 1, WA: 2 }
