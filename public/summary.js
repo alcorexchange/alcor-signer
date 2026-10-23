@@ -273,8 +273,11 @@ const POOL_ACTIONS = {
       risks: [],
     }
   },
-  // A zero minimum is shown as is: it is no protection, not a missing side.
+  // Zero liquidity takes nothing out: it only updates the fees a `collect` then takes.
+  // Zero minimums are what the app always sends; "at least 0" reads as receiving nothing.
   subliquid: (data) => {
+    if (/^0+$/.test(String(data.liquidity))) return { title: 'Update fees', side: true, rows: [], risks: [] }
+
     const minimums = [data.tokenAMin, data.tokenBMin].map((text) => parseAmount(text, null))
     if (minimums.some((amount) => !amount)) {
       return {
@@ -284,11 +287,10 @@ const POOL_ACTIONS = {
       }
     }
 
-    return {
-      title: 'Remove liquidity',
-      rows: [{ dir: 'in', label: 'You receive at least', amount: minimums.map(formatAmount), sub: pool(data) }],
-      risks: [],
-    }
+    const row = minimums.some((amount) => amount.units > 0n)
+      ? { dir: 'in', label: 'You receive at least', amount: minimums.map(formatAmount), sub: pool(data) }
+      : { dir: 'in', label: 'You withdraw', amount: minimums.map((amount) => amount.symbol).join(' / '), sub: pool(data) }
+    return { title: 'Remove liquidity', rows: [row], risks: [] }
   },
   // collect maximums mean "take everything" and are huge, so no amounts.
   collect: (data) => ({
