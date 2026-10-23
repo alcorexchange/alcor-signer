@@ -6,7 +6,7 @@
 
 import { p256 } from './vendor/wharfkit.js'
 import { assertWithPrf } from './passkey.js'
-import { ROOT_SALT, rootFromSecret } from './root.js'
+import { ROOT_SALT, forgetRoot, rootFromSecret } from './root.js'
 import { accountsEverywhere } from './sign.js'
 import { hostOf, presenceOf, signedDigest, webAuthnPublicKey } from './webauthn.js'
 
@@ -18,25 +18,33 @@ import { hostOf, presenceOf, signedDigest, webAuthnPublicKey } from './webauthn.
  */
 export async function discoverPasskey() {
   const first = await assertWithPrf(null, [ROOT_SALT])
-  const candidates = recoverWebAuthnKeys(first.response)
   const root = rootFromSecret(first.secrets[0])
 
-  const found = await Promise.all(
-    candidates.map(async (key) => ({ key, used: (await accountsEverywhere(key)).length > 0 }))
-  )
-  const used = found.filter((entry) => entry.used)
+  // The root is the caller's to wipe only once it is returned.
+  try {
+    const candidates = recoverWebAuthnKeys(first.response)
+    const found = await Promise.all(
+      candidates.map(async (key) => ({ key, used: (await accountsEverywhere(key)).length > 0 }))
+    )
+    const used = found.filter((entry) => entry.used)
 
-  let publicKey = used.length === 1 ? used[0].key : null
+    let publicKey = used.length === 1 ? used[0].key : null
 
-  if (!publicKey) {
-    const second = await assertWithPrf({ credentialId: first.credentialId }, [ROOT_SALT])
-    const again = new Set(recoverWebAuthnKeys(second.response))
-    publicKey = candidates.find((key) => again.has(key)) ?? null
+    if (!publicKey) {
+      const second = await assertWithPrf({ credentialId: first.credentialId }, [ROOT_SALT])
+      // Only its signature is needed: the secret is the same root.
+      for (const secret of second.secrets) secret.fill(0)
+      const again = new Set(recoverWebAuthnKeys(second.response))
+      publicKey = candidates.find((key) => again.has(key)) ?? null
+    }
+
+    if (!publicKey) throw new Error('Could not recognise this passkey. Try again.')
+
+    return { passkey: { credentialId: first.credentialId, publicKey, prf: true }, root }
+  } catch (error) {
+    forgetRoot(root)
+    throw error
   }
-
-  if (!publicKey) throw new Error('Could not recognise this passkey. Try again.')
-
-  return { passkey: { credentialId: first.credentialId, publicKey, prf: true }, root }
 }
 
 // The host comes from `clientDataJSON` — exactly what the chain checks when signing.

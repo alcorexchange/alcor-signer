@@ -65,7 +65,12 @@ export async function signDigest(passkey, digest) {
  */
 export async function signDigestWithPrf(passkey, digest, salts) {
   const { response, secrets } = await assertWithPrf(passkey, salts, digest.array)
-  return { signature: createSignature(PublicKey.from(passkey.publicKey), response), secrets }
+  try {
+    return { signature: createSignature(PublicKey.from(passkey.publicKey), response), secrets }
+  } catch (error) {
+    for (const secret of secrets) secret.fill(0)
+    throw error
+  }
 }
 
 // Empty `allowCredentials` means any discoverable credential of this origin.
@@ -117,6 +122,7 @@ export async function assertWithPrf(passkey, salts, challenge = crypto.getRandom
 
   // Never return empty: without PRF there is no root and no fast sign key (ADR-0010 §2).
   if (secrets.length < salts.length) {
+    for (const secret of secrets) secret.fill(0)
     throw new Error('This browser or device cannot derive keys from passkeys. Update the browser or use another device.')
   }
 

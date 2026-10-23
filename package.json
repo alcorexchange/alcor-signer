@@ -8,7 +8,8 @@
     "vendor": "sh vendor/build.sh",
     "csp": "node -e \"import('./headers.mjs').then(m => console.log(m.contentSecurityPolicy(process.argv[1] ?? 'prod')))\"",
     "abis": "node scripts/pin-abis.mjs",
-    "headers": "node scripts/headers.mjs"
+    "headers": "node scripts/headers.mjs",
+    "test": "node --test"
   },
   "devDependencies": {
     "@noble/curves": "1.9.7",

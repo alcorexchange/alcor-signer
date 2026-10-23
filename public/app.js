@@ -111,6 +111,7 @@ import {
   balanceFor,
   buildTransaction,
   pushTransaction,
+  confirmApplied,
   signTransaction,
   signTransactionWithKey,
   signTransactionWithPrf,
@@ -1076,11 +1077,12 @@ const slotsId = (scope) => `${scope.chainId}:${scope.account}@${scope.permission
 const retiredSlots = (scope) => cachedValue('retired', slotsId(scope)) ?? []
 const retireSlots = (scope, slots) => rememberValue('retired', slotsId(scope), [...new Set([...retiredSlots(scope), ...slots])])
 
-// Random, never a retired one while any other is left; recovery checks every slot.
+// Random and never a retired one: recovery checks every slot, so the number doesn't matter
+// to it. All used up — a new passkey gives new slots, a used one would bring a stolen key back.
 function randomSlot(scope, except = []) {
-  const all = [...Array(HOT_KEY_SLOTS).keys()].filter((n) => !except.includes(n))
-  const fresh = all.filter((n) => !retiredSlots(scope).includes(n))
-  const free = fresh.length ? fresh : all
+  const retired = retiredSlots(scope)
+  const free = [...Array(HOT_KEY_SLOTS).keys()].filter((n) => !except.includes(n) && !retired.includes(n))
+  if (!free.length) throw new Error('Every browser key of this passkey was used on this account. Replace the passkey to get new ones.')
   return free[crypto.getRandomValues(new Uint32Array(1))[0] % free.length]
 }
 
@@ -1230,14 +1232,21 @@ async function fastSlotsOn(passkey, scope, auth) {
  * such an ABI, so a mismatch here is a system contract updated before `yarn abis`, not
  * a lying node — and refusing would lock the user out of turning off a stolen key.
  *
- * @param {{ known?: string[], seen?: Set<string>, review?: boolean }} [options] — `known`:
+ * Returns once nodes that agree show the change (`confirmApplied`), not when one node
+ * answers: what callers do next — store a key, forget one, report "removed" — rests on it.
+ *
+ * @param {{ known?: string[], seen?: Set<string>, review?: boolean, sent?: () => void }} [options] — `known`:
  *   keys this change adds, not stored yet; `seen`: what the screen already listed
- *   (`seenId`); `review: false` where the screen listed all of it
+ *   (`seenId`); `review: false` where the screen listed all of it; `sent`: called once a
+ *   node took it, for what must not be reused even if it is not confirmed
  */
-async function submitWith(on, sign, actions, { known = [], seen = new Set(), review = true } = {}) {
+async function submitWith(on, sign, actions, { known = [], seen = new Set(), review = true, sent = () => {} } = {}) {
   const built = await buildTransaction(on, actions)
   if (review) await reviewAuthority(built.actions, known, seen)
-  return pushTransaction(on, await sign(built.transaction, built.chainId))
+  const txid = await pushTransaction(on, await sign(built.transaction, built.chainId))
+  sent()
+  await confirmApplied(on, built.actions, txid)
+  return txid
 }
 
 async function ourKeys(known = []) {
@@ -1539,13 +1548,13 @@ async function coverageSection(passkey, root, out) {
     tile({ icon: ICONS.check, tone: 'mint', title: entry.name, sub: `${entry.chain.name} · comes back with these words` })
 
   // Owner indexes are handed out here too: `get_accounts_by_authorizers` lags, and two
-  // accounts covered in a row would share a key. An index is taken only after the
-  // transaction is accepted — recovery by words stops at the first gap.
+  // accounts covered in a row would share a key. An index is taken once a node took the
+  // transaction, not before — recovery by words stops at the first gap.
   const taken = new Map()
   const allocate = async (chain) => {
     const free = (await nextFreeIndex(root, chain)).index
     const index = Math.max(free, (taken.get(chain.chainId) ?? -1) + 1)
-    return { index, publicKey: ownerPublicKey(root, chain, index) }
+    return { index, publicKey: ownerPublicKey(root, chain, index), take: () => taken.set(chain.chainId, index) }
   }
 
   const rows = await Promise.all(
@@ -1568,7 +1577,6 @@ async function coverageSection(passkey, root, out) {
               row.disabled = false
               return
             }
-            taken.set(entry.chain.chainId, key.index)
             row.replaceWith(coveredRow(entry))
           },
         })
@@ -1607,7 +1615,7 @@ async function attachRecovery(entry, allocate, out) {
       entry.chain,
       entry.passkey,
       [editKeysAction(entry.name, 'owner', owner, { add: [key.publicKey] })],
-      { known: [key.publicKey] }
+      { known: [key.publicKey], sent: key.take }
     )
 
     out.replaceChildren(banner('ok', `${entry.name} now comes back with these words`), explorerLink(txid, entry.chain))
@@ -1705,8 +1713,11 @@ async function moveAccount({ chain: on, name, oldOwnerKey, oldPasskey, newPasske
     )
   }
 
-  const txid = await submitWith(on, signer.sign, actions, { known: unique([newPasskey.publicKey, newOwner]) })
-  if (newOwner) owners.take(on)
+  // Taken once sent: an unconfirmed move may still land, and two accounts must not share an owner key.
+  const txid = await submitWith(on, signer.sign, actions, {
+    known: unique([newPasskey.publicKey, newOwner]),
+    sent: () => newOwner && owners.take(on),
+  })
   await forgetHotKeysOf(on, name)
   return { txid, owner: Boolean(newOwner) }
 }
@@ -1731,7 +1742,11 @@ async function moveAll(accounts, { oldPasskey, newPasskey, newRoot, lost = false
   const owners = ownerSlots(newRoot)
   const results = []
 
-  for (const entry of accounts) {
+  // Highest old owner slot first: a moved account empties its slot, and GAP empty slots
+  // in a row end the scan of the old words, so a move cut short must not hide what's after.
+  const ordered = [...accounts].sort((a, b) => (b.key?.index ?? -1) - (a.key?.index ?? -1))
+
+  for (const entry of ordered) {
     try {
       const moved = await moveAccount({
         chain: entry.chain,

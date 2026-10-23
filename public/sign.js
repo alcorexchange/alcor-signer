@@ -413,15 +413,67 @@ export async function pushTransaction(chain, signed) {
 
   try {
     const response = await call(chain, (client) => client.v1.chain.push_transaction(packed))
-    return String(response.transaction_id)
+    if (String(response.transaction_id) !== id) {
+      throw new Error(`The ${chain.name} node answered for another transaction. Check the account before trying again.`)
+    }
+    return id
   } catch (error) {
     // The first node may have accepted it without answering, then the next says
-    // "duplicate". That is success; the id is the hash of the unsigned body.
+    // "duplicate". Only sent, like any answer here: `confirmApplied` says whether it landed.
     if (/duplicate/i.test(String(error?.message ?? error))) return id
 
     throw error
   }
 }
+
+const CONFIRM_TRIES = 10
+const CONFIRM_PAUSE_MS = 1500
+
+/**
+ * Wait until nodes that agree show what `actions` change: one node saying "executed" is
+ * no proof, and callers forget keys and move on only after this. Right after a change
+ * nodes differ for a second or two, so it reads again before giving up.
+ *
+ * @param {object[]} actions — decoded from the built transaction
+ * @throws when the change doesn't show; it may still land, so nothing else should change
+ */
+export async function confirmApplied(chain, actions, txid) {
+  const changes = actions.filter((action) => action.account === 'eosio' && PERMISSION_EDITS.has(action.name))
+  const accounts = [...new Set(changes.map((action) => action.data.account))]
+
+  for (let attempt = 1; ; attempt++) {
+    const shown = await Promise.all(accounts.map((account) => agreedPermissions(chain, account).catch(() => null)))
+    const byAccount = new Map(accounts.map((account, i) => [account, shown[i]]))
+    if (changes.every((action) => applied(action, byAccount.get(action.data.account)))) return
+
+    if (attempt === CONFIRM_TRIES) {
+      throw new Error(
+        `Sent as ${txid.slice(0, 12)}…, but ${chain.name} nodes don't show the change. ` +
+          'Look at the account in a minute before trying again: it may still land.'
+      )
+    }
+    await new Promise((resolve) => setTimeout(resolve, CONFIRM_PAUSE_MS))
+  }
+}
+
+const PERMISSION_EDITS = new Set(['updateauth', 'deleteauth'])
+
+function applied(action, permissions) {
+  if (!permissions) return false
+  const found = permissions.find((permission) => permission.name === action.data.permission)
+  if (action.name === 'deleteauth') return !found
+  return Boolean(found) && sameAuthority(found, { parent: action.data.parent, ...action.data.auth })
+}
+
+const sameAuthority = (a, b) => JSON.stringify(authorityShape(a)) === JSON.stringify(authorityShape(b))
+
+const authorityShape = (auth) => ({
+  parent: String(auth.parent),
+  threshold: Number(auth.threshold),
+  keys: auth.keys.map((entry) => [String(PublicKey.from(entry.key)), Number(entry.weight)]),
+  accounts: auth.accounts.map((entry) => [String(entry.permission.actor), String(entry.permission.permission), Number(entry.weight)]),
+  waits: auth.waits.map((entry) => [Number(entry.wait_sec), Number(entry.weight)]),
+})
 
 /**
  * Add and/or remove keys on a permission, keeping the rest of the on-chain authority.

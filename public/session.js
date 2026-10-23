@@ -4,7 +4,7 @@
 // Consent comes from reading the vault screen, not the touch: the passkey prompt shows
 // only the origin, so a click on the same screen carries the same meaning.
 //
-// Derived, not random: one PRF salt per scope gives 32 bytes, and slots 0…19 come from
+// Derived, not random: one PRF salt per scope gives 32 bytes, and slots 0…255 come from
 // them locally. The browser is only a cache — after clearing it, one touch re-derives
 // the candidates and the chain shows which one is on the account. One salt per scope,
 // not per slot: WebAuthn gives at most two salts per touch.
@@ -19,7 +19,9 @@ import { derivePrfSecret } from './passkey.js'
 const DB = 'alcor-vault'
 const STORE = 'hot-keys'
 
-export const HOT_KEY_SLOTS = 20
+// As many as the slot byte holds: the list of retired slots lives in a cache a cleared
+// browser loses, so a fresh slot is what keeps a stolen key from coming back.
+export const HOT_KEY_SLOTS = 256
 
 // P-256 order: Antelope rejects s above half of it.
 const CURVE_ORDER = 0xffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551n
@@ -33,20 +35,49 @@ function open() {
       for (const name of [...db.objectStoreNames]) if (name !== STORE) db.deleteObjectStore(name)
       if (!db.objectStoreNames.contains(STORE)) db.createObjectStore(STORE)
     }
-    request.onsuccess = () => resolve(request.result)
+    request.onsuccess = () => {
+      const db = request.result
+      // Another tab opening a newer version must not wait on this one.
+      db.onversionchange = () => db.close()
+      resolve(db)
+    }
     request.onerror = () => reject(request.error)
+    request.onblocked = () => reject(new Error('Another Alcor Signer tab is holding the key store — close it and try again.'))
   })
 }
 
+// Resolves with the request's result once the transaction commits: a request's success
+// is not a commit, and a key reported saved must be saved.
 function tx(mode, run) {
   return open().then(
     (db) =>
       new Promise((resolve, reject) => {
-        const request = run(db.transaction(STORE, mode).objectStore(STORE))
-        request.onsuccess = () => resolve(request.result)
-        request.onerror = () => reject(request.error)
+        const transaction = db.transaction(STORE, mode)
+        const request = run(transaction.objectStore(STORE))
+        transaction.oncomplete = () => {
+          db.close()
+          resolve(request.result)
+        }
+        transaction.onabort = () => {
+          db.close()
+          reject(transaction.error ?? request.error ?? new Error('The browser did not save the key store'))
+        }
       })
   )
+}
+
+// Read and write in one transaction, so another tab's write in between isn't lost.
+// `change` gets the record (or undefined) and returns the new one, or null to leave it.
+// Resolves with the record as it was.
+function update(id, change) {
+  return tx('readwrite', (store) => {
+    const request = store.get(id)
+    request.onsuccess = () => {
+      const next = change(request.result)
+      if (next) store.put(next, id)
+    }
+    return request
+  })
 }
 
 /**
@@ -76,8 +107,11 @@ export async function hotCandidates(secret) {
 
   for (let n = 0; n < HOT_KEY_SLOTS; n++) {
     const scalar = await scalarAt(secret, n)
-    candidates.push({ n, publicKey: publicKeyOf(p256.getPublicKey(scalar, true)) })
-    scalar.fill(0)
+    try {
+      candidates.push({ n, publicKey: publicKeyOf(p256.getPublicKey(scalar, true)) })
+    } finally {
+      scalar.fill(0)
+    }
   }
 
   return candidates
@@ -91,40 +125,41 @@ export async function hotCandidates(secret) {
  */
 export async function adoptHotKey(secret, scope, n, { keepAuto = false } = {}) {
   const scalar = await scalarAt(secret, n)
-  const point = p256.getPublicKey(scalar, false)
   const curve = { name: 'ECDSA', namedCurve: 'P-256' }
+  let jwk = null
+  let pair
 
-  const jwk = {
-    kty: 'EC',
-    crv: 'P-256',
-    d: toBase64Url(scalar),
-    x: toBase64Url(point.slice(1, 33)),
-    y: toBase64Url(point.slice(33)),
-    ext: false,
+  try {
+    const point = p256.getPublicKey(scalar, false)
+    jwk = {
+      kty: 'EC',
+      crv: 'P-256',
+      d: toBase64Url(scalar),
+      x: toBase64Url(point.slice(1, 33)),
+      y: toBase64Url(point.slice(33)),
+      ext: false,
+    }
+    pair = {
+      privateKey: await crypto.subtle.importKey('jwk', jwk, curve, false, ['sign']),
+      publicKey: await crypto.subtle.importKey('raw', point, curve, true, ['verify']),
+    }
+  } finally {
+    scalar.fill(0)
+    if (jwk) jwk.d = ''
   }
-
-  const pair = {
-    privateKey: await crypto.subtle.importKey('jwk', jwk, curve, false, ['sign']),
-    publicKey: await crypto.subtle.importKey('raw', point, curve, true, ['verify']),
-  }
-
-  scalar.fill(0)
-  jwk.d = ''
 
   // Any other adoption starts at Fast: a flag from a key removed on chain must not silently turn on signing without a window.
-  const previous = keepAuto ? await tx('readonly', (store) => store.get(idOf(scope))) : null
-  const record = { scope, n, pair, auto: previous?.auto === true, createdAt: Date.now() }
-  await tx('readwrite', (store) => store.put(record, idOf(scope)))
-  return describeKey(record)
+  const record = { scope, n, pair, auto: false, createdAt: Date.now() }
+  const auto = (previous) => keepAuto && previous?.auto === true
+  const previous = await update(idOf(scope), (old) => ({ ...record, auto: auto(old) }))
+  return describeKey({ ...record, auto: auto(previous) })
 }
 
 // The Auto flag lives on the key record: no key, no Auto, and they can't drift apart.
 // No limits or expiry on purpose; no transaction, the key on chain is the same as for Fast.
 export async function setAutoSign(scope, on) {
-  const record = await tx('readonly', (store) => store.get(idOf(scope)))
+  const record = await update(idOf(scope), (old) => old && { ...old, auto: on })
   if (!record) throw new Error('Fast sign is not on in this browser')
-
-  await tx('readwrite', (store) => store.put({ ...record, auto: on }, idOf(scope)))
 }
 
 export async function loadHotKey(scope) {
@@ -156,15 +191,22 @@ async function scalarAt(secret, n) {
   const label = new TextEncoder().encode('alcor/v1/auto-key')
 
   for (let counter = 0; counter < 8; counter++) {
+    // Holds the secret, so it is wiped like it.
     const input = new Uint8Array(label.length + secret.length + 2)
-    input.set(label)
-    input.set(secret, label.length)
-    input[input.length - 2] = n
-    input[input.length - 1] = counter
+    let bytes
+    try {
+      input.set(label)
+      input.set(secret, label.length)
+      input[input.length - 2] = n
+      input[input.length - 1] = counter
+      bytes = new Uint8Array(await crypto.subtle.digest('SHA-256', input))
+    } finally {
+      input.fill(0)
+    }
 
-    const bytes = new Uint8Array(await crypto.subtle.digest('SHA-256', input))
     const value = toBigInt(bytes)
     if (value > 0n && value < CURVE_ORDER) return bytes
+    bytes.fill(0)
   }
 
   throw new Error('Could not derive a valid key from the passkey secret')

@@ -80,7 +80,9 @@ export const ownerPath = (chain, index) => `m/44'/${chain.slip44}'/${index}'/0/0
 // K1, so Anchor, cleos and any wallet accept it: recovery is worth only what works outside.
 function ownerKey(root, chain, index) {
   const node = root.master.derive(ownerPath(chain, index))
-  const privateKey = new PrivateKey(KeyType.K1, Bytes.from(node.privateKey))
+  // A copy: `Bytes.from` shares memory, and the node is wiped right away.
+  const privateKey = new PrivateKey(KeyType.K1, Bytes.from(node.privateKey.slice()))
+  node.wipePrivateData()
 
   return { index, path: ownerPath(chain, index), privateKey, publicKey: k1PublicKey(privateKey) }
 }
@@ -121,17 +123,25 @@ export async function rootAccounts(root, chains = Object.values(CHAINS)) {
 async function scanChain(root, chain) {
   const found = []
 
-  for (let index = 0, empty = 0; empty < GAP; index++) {
-    const key = ownerKey(root, chain, index)
-    const accounts = await accountsForKey(chain, key.publicKey)
+  try {
+    for (let index = 0, empty = 0; empty < GAP; index++) {
+      const key = ownerKey(root, chain, index)
+      let accounts
+      try {
+        accounts = await accountsForKey(chain, key.publicKey)
+      } finally {
+        if (!accounts?.length) key.privateKey.data.array.fill(0)
+      }
 
-    if (accounts.length) empty = 0
-    else {
-      empty++
-      key.privateKey.data.array.fill(0)
+      if (accounts.length) empty = 0
+      else empty++
+
+      found.push(...accounts.map((account) => ({ ...account, chain, key })))
     }
-
-    found.push(...accounts.map((account) => ({ ...account, chain, key })))
+  } catch (error) {
+    // The caller gets no list to wipe: the keys found so far go here.
+    forgetFoundKeys(found)
+    throw error
   }
 
   return found
@@ -155,9 +165,12 @@ export function ownerKeyOf(root, chain, publicKey) {
 
 // First slot with no account: a used slot would tie two accounts to one key.
 // Public half only: a free slot is for handing out, nothing signs with it yet.
+// Not past OWNER_SLOTS: `ownerKeyOf` would not find a key handed out there.
 export async function nextFreeIndex(root, chain) {
-  for (let index = 0; ; index++) {
+  for (let index = 0; index < OWNER_SLOTS; index++) {
     const publicKey = ownerPublicKey(root, chain, index)
     if (!(await accountsForKey(chain, publicKey)).length) return { index, publicKey }
   }
+
+  throw new Error(`These words already own ${OWNER_SLOTS} accounts on ${chain.name}: there is no owner key left to hand out.`)
 }
