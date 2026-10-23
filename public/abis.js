@@ -6,27 +6,27 @@ export const PINNED_ABIS = {
   "telos": {
     "eosio": "fccb1a515b98d2232a1227279666d9a3fcd41f67fafa0d75212cc0a282564361",
     "eosio.token": "fb8452c70aa203505592aef25b696acaa1aee58805888cc9aae024b4c03af91e",
-    "swap.alcor": "7252a6b47a0484fae77ee3408aec806102270c4b2a7b5d19eabe0fb7ce1d1c9a",
+    "swap.alcor": "fc7187eb14194bb0d03f5e27dceced144777f5d31226c6c1a9e15edc53aec1a4",
     "eostokensdex": "8b43316996c04b0464e3042192dcc4c55a1dea6bef05349e10d434cb648e1c15",
     "cpu.alcor": "d32330e661921042efa7f2090430fb822bd8ace2f1c01748c0fe0d56a86f25a7"
   },
   "wax": {
     "eosio": "a1683bbeb3418ad502aac045372850b5fcfa0aef494795ac70228f01433273d6",
     "eosio.token": "b52fab4efd51790f231ac36b4d44b440e3fb34c8f6d7fb5929ddde69f25647e7",
-    "swap.alcor": "7252a6b47a0484fae77ee3408aec806102270c4b2a7b5d19eabe0fb7ce1d1c9a",
+    "swap.alcor": "fc7187eb14194bb0d03f5e27dceced144777f5d31226c6c1a9e15edc53aec1a4",
     "alcordexmain": "8b43316996c04b0464e3042192dcc4c55a1dea6bef05349e10d434cb648e1c15",
     "liquid.alcor": "4742294631d51bd40586de1d88bca778c829a711c558e76415bdda22802a7bb2"
   },
   "xpr": {
     "eosio": "cb762c58e4823e73a9d677721929305657e1134f0d34a2f318f7c9ca638eaba8",
     "eosio.token": "bf13acab1b4bc2676ef6f0afcf1765ab5db3ffa1ac18453a628e1e65fe26e045",
-    "swap.alcor": "7252a6b47a0484fae77ee3408aec806102270c4b2a7b5d19eabe0fb7ce1d1c9a",
+    "swap.alcor": "fc7187eb14194bb0d03f5e27dceced144777f5d31226c6c1a9e15edc53aec1a4",
     "alcor": "8b43316996c04b0464e3042192dcc4c55a1dea6bef05349e10d434cb648e1c15"
   },
   "vaulta": {
     "eosio": "dbd704dd1b7df115cf9a4c31eb98dd1336476ea5642445aa00dc8f8bb4910abc",
     "eosio.token": "b0d66b0c516dbafbee060e23db692562e852354c0f978dd9549cbed1f16a1580",
-    "swap.alcor": "7252a6b47a0484fae77ee3408aec806102270c4b2a7b5d19eabe0fb7ce1d1c9a",
+    "swap.alcor": "fc7187eb14194bb0d03f5e27dceced144777f5d31226c6c1a9e15edc53aec1a4",
     "eostokensdex": "8b43316996c04b0464e3042192dcc4c55a1dea6bef05349e10d434cb648e1c15"
   }
 }
