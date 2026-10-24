@@ -862,6 +862,7 @@ const LEVEL_TIP = {
   auto: 'Alcor trades sign instantly — no window, no click. Anything else still opens here.',
 }
 const AUTO_CAUTION = 'Best kept to your own device.'
+const TAGLINE = 'No email. No KYC. Ready in seconds.'
 
 const AUTO_NOTICE =
   'Trades on Alcor go through right away, without this second check. Anything else still opens here for you to confirm.'
@@ -2500,6 +2501,7 @@ function loginScreen(incoming) {
           state({
             icon: ICONS.key,
             title: `Sign in to ${from}`,
+            tagline: TAGLINE,
             text: notFound
               ? 'No Alcor Signer passkey came back. New here? Create one. Cancelled by mistake? Try again.'
               : 'Your passkey syncs through iCloud Keychain or Google Password Manager — sign in with it.',
@@ -2831,6 +2833,7 @@ function createScreen({ request, reply }) {
         state({
           icon: ICONS.key,
           title: `New ${chain.name} account`,
+          tagline: TAGLINE,
           text: 'Your passkey syncs through iCloud Keychain or Google Password Manager — use it, or create one.',
         }),
         out,

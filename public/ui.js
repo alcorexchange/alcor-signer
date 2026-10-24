@@ -352,10 +352,11 @@ export const inlineAction = (text, paths, onclick, variant = '') =>
     el('span', { textContent: text }),
   ])
 
-export const state = ({ icon: paths, tone = '', title, text }) =>
+export const state = ({ icon: paths, tone = '', title, tagline, text }) =>
   el('div', { className: 'state' }, [
     el('div', { className: `state-icon ${tone}`.trim() }, [icon(paths, 26)]),
     el('div', { className: 'state-title', textContent: title }),
+    tagline ? el('div', { className: 'state-tagline', textContent: tagline }) : null,
     text ? el('div', { className: 'state-text', textContent: text }) : null,
   ])
 

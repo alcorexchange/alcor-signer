@@ -667,6 +667,7 @@ button.mode-option:hover .mode-option-name { color: color-mix(in srgb, var(--pri
 .state-icon.amber { color: var(--warning); }
 .state-icon.red { color: var(--error); }
 .state-title { font-size: 18px; font-weight: 500; letter-spacing: -0.02em; }
+.state-tagline { margin-top: 8px; font-size: 13.5px; font-weight: 500; letter-spacing: -0.01em; color: var(--text-secondary); }
 .state-text { max-width: 320px; margin: 9px auto 0; font-size: 12.5px; line-height: 1.6; color: var(--text-muted); }
 
 /* ── banners ────────────────────────────────────────────── */
