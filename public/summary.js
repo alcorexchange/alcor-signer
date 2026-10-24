@@ -160,6 +160,7 @@ const DECODERS = [
   { match: (chain, a) => a.name === 'credit' && Object.hasOwn(chain.bridge?.gateways ?? {}, a.account), decode: bridgeCredit },
   { match: (chain, a) => a.account === chain.bridge?.contract && a.name === 'claim', decode: bridgeClaim },
   { match: (chain, a) => a.name === 'transfer', decode: transfer },
+  { match: (chain, a) => isTokenOpen(a), decode: tokenOpen },
 ]
 
 function decode(chain, action) {
@@ -568,6 +569,28 @@ const utcDate = (seconds) =>
 function splitMemo(memo) {
   const at = memo.indexOf(':')
   return at < 0 ? [memo, ''] : [memo.slice(0, at), memo.slice(at + 1)]
+}
+
+// eosio.token's `open`: an empty balance row, so a contract that pays only into an existing
+// row (book.alcor) can pay out. No tokens move; the RAM payer pays for the row.
+const OPEN_FIELDS = ['owner', 'symbol', 'ram_payer']
+
+function isTokenOpen(action) {
+  const fields = Object.keys(action.data ?? {})
+  return action.name === 'open' && fields.length === OPEN_FIELDS.length && OPEN_FIELDS.every((field) => fields.includes(field))
+}
+
+function tokenOpen(chain, action) {
+  const { owner, symbol, ram_payer: payer } = action.data
+  const name = String(symbol).split(',').pop()
+  const issuer = action.account === chain.systemToken.contract ? null : `${action.account} token`
+  const paid = String(payer) === String(owner) ? 'a few bytes of your RAM' : `RAM paid by ${payer}`
+  return {
+    title: `Open ${name} balance`,
+    side: true,
+    rows: [{ dir: 'in', label: `Balance for ${owner}`, amount: name, sub: [issuer, paid].filter(Boolean).join(' · ') }],
+    risks: [],
+  }
 }
 
 function unknown(action) {
