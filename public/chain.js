@@ -4,7 +4,7 @@
 // `family` is how signing works. Within `antelope` one passkey serves every network:
 // the rpId is checked against the origin, not the chain.
 
-/** @typedef {{ id: string, family: string, name: string, chainId: string, rpcs: string[], explorer: string, logo: string, permission: string, systemToken: { symbol: string, contract: string }, alcor: { swap: string, spot: string }, bridge?: { contract?: string, lightClients?: Record<string, string>, gateways?: Record<string, string>, vault?: string, domain?: string }, slip44: number }} Chain */
+/** @typedef {{ id: string, family: string, name: string, chainId: string, rpcs: string[], explorer: string, logo: string, permission: string, systemToken: { symbol: string, contract: string }, alcor: { swap: string, spot?: string, liquid?: string }, bridge?: { contract?: string, lightClients?: Record<string, string>, gateways?: Record<string, string>, vault?: string, domain?: string }, slip44: number }} Chain */
 
 /** @type {Record<string, Chain>} */
 export const CHAINS = {
@@ -20,7 +20,8 @@ export const CHAINS = {
     permission: 'active',
     systemToken: { symbol: 'TLOS', contract: 'eosio.token' },
     // Decides which decoder reads an action (summary.js); a swap sent elsewhere isn't a swap.
-    alcor: { swap: 'swap.alcor', spot: 'eostokensdex' },
+    // No `spot`: eostokensdex is retired here, its code and ABI are gone.
+    alcor: { swap: 'swap.alcor' },
     // Alcor pays CPU, as on WAX — see there.
     cpuPayer: { contract: 'cpu.alcor', action: 'noop', actor: 'cpu.alcor', permission: 'bw' },
     // The bridge hub (summary.js). Proof contracts are listed by exact name, not by the

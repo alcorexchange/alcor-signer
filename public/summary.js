@@ -98,14 +98,14 @@ function autoAllows(chain, action) {
       // Fees to someone else are a gift, not a trade.
       return AUTO_POOL_ACTIONS.has(name) && (name !== 'collect' || String(data.recipient) === String(data.owner))
     }
-    return contract === chain.alcor.spot && SPOT_CANCELS.has(name)
+    return Boolean(chain.alcor.spot) && contract === chain.alcor.spot && SPOT_CANCELS.has(name)
   }
 
   const to = String(data.to ?? '')
   const memo = String(data.memo ?? '')
 
   if (to === chain.alcor.swap) return memo === DEPOSIT || isOwnSwap(memo, String(data.from ?? ''))
-  if (to === chain.alcor.spot) return Boolean(parseOrder(memo))
+  if (chain.alcor.spot && to === chain.alcor.spot) return Boolean(parseOrder(memo))
   if (chain.alcor.liquid && to === chain.alcor.liquid) return LIQUID_MEMOS.has(memo)
   return false
 }
@@ -154,7 +154,7 @@ const SPOT_CANCELS = new Set(['cancelbuy', 'cancelsell'])
 const DECODERS = [
   { match: (chain, a) => a.account === 'eosio' && a.name === 'updateauth', decode: permissionChange },
   { match: (chain, a) => a.account === 'eosio' && Object.hasOwn(SYSTEM_ACTIONS, a.name), decode: systemAction },
-  { match: (chain, a) => a.account === chain.alcor.spot && SPOT_CANCELS.has(a.name), decode: spotCancel },
+  { match: (chain, a) => Boolean(chain.alcor.spot) && a.account === chain.alcor.spot && SPOT_CANCELS.has(a.name), decode: spotCancel },
   { match: (chain, a) => a.account === chain.alcor.swap && Object.hasOwn(POOL_ACTIONS, a.name), decode: poolAction },
   { match: (chain, a) => LIGHT_CLIENT_PROOFS.has(a.name) && Object.hasOwn(chain.bridge?.lightClients ?? {}, a.account), decode: bridgeProof },
   { match: (chain, a) => a.name === 'credit' && Object.hasOwn(chain.bridge?.gateways ?? {}, a.account), decode: bridgeCredit },
@@ -169,7 +169,7 @@ function decode(chain, action) {
 
 function receiverDecoder(chain, to) {
   if (to === chain.alcor.swap) return swap
-  if (to === chain.alcor.spot) return spotOrder
+  if (chain.alcor.spot && to === chain.alcor.spot) return spotOrder
   if (to === chain.bridge?.contract) return bridgeWithdraw
   if (to === chain.bridge?.vault) return bridgeDeposit
   return plainTransfer
@@ -704,7 +704,9 @@ function plainTransfer(chain, { to, amount, memo }) {
   } else if (parseOrder(memo)) {
     risks.push({
       kind: 'danger',
-      text: `The memo looks like an Alcor order, but the money goes to ${to} — Alcor trades through ${chain.alcor.spot}.`,
+      text: chain.alcor.spot
+        ? `The memo looks like an Alcor order, but the money goes to ${to} — Alcor trades through ${chain.alcor.spot}.`
+        : `The memo looks like an Alcor order, but the money goes to ${to} — Alcor has no order book on ${chain.name}.`,
     })
   }
 
