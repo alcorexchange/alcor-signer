@@ -610,7 +610,6 @@ function accountRow(entry) {
             onState: (level) =>
               fast.replaceChildren(...(level === 'passkey' ? [] : [chip(level === 'auto' ? 'Auto' : 'Fast', LEVEL_ICON[level], LEVEL_TONE[level])])),
             onRemove: () => unlinkScreen(entry),
-            onExport: () => exportKeyScreen(entry),
           }),
         ]),
       ]),
@@ -654,76 +653,6 @@ async function unlinkPlan(entry) {
     // The passkey signs the updateauth alone, so it needs the whole threshold.
     canSign: weightOf(entry.passkey.publicKey) >= auth.threshold,
   }
-}
-
-/**
- * The account's owner key from the 24 words, as a plain private key for Anchor, cleos or
- * any wallet. Only that key: a passkey and a Fast sign key never leave the device. The
- * owner is read from nodes that agree; the key is derived here and matched against it.
- */
-function exportKeyScreen(entry) {
-  const title = 'Export private key'
-  const sub = `${entry.name} · ${entry.chain.name}`
-  const step = stack([])
-  const out = stack([])
-
-  // The key on screen, if any: every way out zeroes it. The WIF string itself can't be.
-  let shown = null
-  const forget = () => {
-    shown?.privateKey.data.array.fill(0)
-    shown = null
-  }
-  const leave = () => {
-    forget()
-    homeScreen()
-  }
-  const draw = (actions) => screen({ body: [pageTitle(title, sub), step, out], actions, back: leave })
-
-  async function reveal() {
-    out.replaceChildren(status('Checking who owns the account'))
-
-    let root = null
-    try {
-      const owner = await agreedAuthority(entry.chain, entry.name, 'owner')
-      out.replaceChildren(status(`Waiting for ${passkeyLabel(entry.passkey)}`))
-      root = await rootFromPasskey(entry.passkey)
-
-      const key = (owner?.keys ?? []).map((onChain) => ownerKeyOf(root, entry.chain, onChain.key)).find(Boolean) ?? null
-      if (!key) {
-        out.replaceChildren(
-          banner(
-            'warn',
-            `The owner of ${entry.name} is not a key from your 24 words, so there is none to export. ` +
-              'If Recovery phrase lists it as “not covered yet”, cover it there first.'
-          )
-        )
-        return
-      }
-
-      shown = key
-      forgetOnHome(forget)
-      out.replaceChildren()
-      step.replaceChildren(
-        banner('danger', `Anyone with this key owns ${entry.name}. Never paste it into a website and never send it to anyone.`),
-        secretKey(key.privateKey.toWif()),
-        card([field('owner public key', mono(key.publicKey))]),
-        note('The classic format starting with 5 — Anchor, cleos and other wallets accept it.')
-      )
-      draw([button('Done', leave, 'primary')])
-    } catch (error) {
-      out.replaceChildren(failure(error))
-    } finally {
-      forgetRoot(root)
-    }
-  }
-
-  step.replaceChildren(
-    card([
-      tile({ icon: ICONS.key, title: 'The owner key of this account', sub: 'For Anchor, cleos or any Antelope wallet' }),
-      tile({ icon: ICONS.alert, tone: 'amber', title: 'Full control of the account', sub: 'Whoever has it can move everything and change every key' }),
-    ])
-  )
-  draw([button('Show with passkey', reveal, 'primary')])
 }
 
 // Unlink lives only here: the vault never accepts permission changes from the app.
@@ -891,18 +820,16 @@ const LEVEL_TEXT = {
   auto: 'Advanced · Alcor trades sign right away, anything else asks here',
 }
 
-function signingPanel(entry, { onState, onRemove, onExport }) {
+function signingPanel(entry, { onState, onRemove }) {
   const box = el('div', { className: 'level' })
   const out = stack([], { tight: true })
   const remove = () => (onRemove ? inlineAction('Remove passkey', ICONS.ban, onRemove, 'quiet') : null)
-  // Home only: a window the app opened never offers a key out.
-  const exporter = () => (onExport ? inlineAction('Export private key', ICONS.key, onExport) : null)
 
   // A browser key on owner would make the browser the account's owner.
   if (entry.permission !== entry.chain.permission) {
     box.replaceChildren(
       el('p', { className: 'level-text', textContent: `Passkey only — it is on ${entry.permission}, apps sign with ${entry.chain.permission}` }),
-      el('div', { className: 'level-actions' }, [exporter(), remove()])
+      el('div', { className: 'level-actions' }, [remove()])
     )
     return box
   }
@@ -935,7 +862,6 @@ function signingPanel(entry, { onState, onRemove, onExport }) {
         : el('div', { className: 'level-actions' }, [
             level !== 'passkey' ? inlineAction('Replace browser key', ICONS.swap, () => rotate()) : null,
             level === 'passkey' && stray.length ? inlineAction('Remove browser keys', ICONS.ban, () => removeStray()) : null,
-            exporter(),
             remove(),
           ]),
     ].filter(Boolean))
@@ -1339,7 +1265,7 @@ const securitySection = (passkeys) =>
         icon: ICONS.download,
         title: 'Recovery phrase',
         aside: icon(ICONS.chevron, 14),
-        onclick: () => withPickedPasskey(passkeys, 'Recovery phrase', (passkey, back) => phraseScreen(passkey, { back, done: homeScreen })),
+        onclick: () => withPickedPasskey(passkeys, 'Recovery phrase', (passkey, back) => phraseScreen(passkey, { back, done: homeScreen, exportKeys: true })),
       }),
       tile({
         icon: ICONS.swap,
@@ -1475,7 +1401,8 @@ function linkGuideScreen(passkey) {
 
 // The words restore an account only if its owner has a key from them; add it where the passkey signs owner.
 // `confirm` — the app asked for a backup: Done waits for "I saved these words".
-function phraseScreen(passkey, { back = homeScreen, done: finish = back, confirm = false, links = [] } = {}) {
+// `exportKeys` — home only: a window the app opened never offers a key out.
+function phraseScreen(passkey, { back = homeScreen, done: finish = back, confirm = false, links = [], exportKeys = false } = {}) {
   const out = stack([])
   const step = stack([])
 
@@ -1522,7 +1449,7 @@ function phraseScreen(passkey, { back = homeScreen, done: finish = back, confirm
       )
       draw([go])
 
-      coverage.replaceChildren(await coverageSection(passkey, root, out))
+      coverage.replaceChildren(await coverageSection(passkey, root, out, { exportKeys }))
     } catch (error) {
       coverage.replaceChildren()
       out.replaceChildren(failure(error))
@@ -1538,16 +1465,42 @@ function phraseScreen(passkey, { back = homeScreen, done: finish = back, confirm
   draw([button('Show with passkey', reveal, 'primary')], () => back())
 }
 
-async function coverageSection(passkey, root, out) {
+async function coverageSection(passkey, root, out, { exportKeys = false } = {}) {
   const failed = new Set()
   const [entries, covered] = await Promise.all([findAccounts([passkey], failed), rootAccounts(root)])
   // A partial list would read as "nothing else to cover": say what was not asked.
   const silent = [...new Set([...covered.failed, ...[...failed].map(chainName)])]
-  const recoverable = new Set(covered.accounts.map((entry) => `${entry.chain.chainId}:${entry.name}`))
+  // The key from the words on each account, owner first: only its public half is kept.
+  const wordsKey = new Map()
+  for (const entry of covered.accounts) {
+    const id = accountId(entry.chain.chainId, entry.name)
+    if (!wordsKey.has(id) || entry.permission === 'owner') wordsKey.set(id, { publicKey: entry.key.publicKey, permission: entry.permission })
+  }
   forgetFoundKeys(covered.accounts)
 
-  const coveredRow = (entry) =>
-    tile({ icon: ICONS.check, tone: 'mint', title: entry.name, sub: `${entry.chain.name} · comes back with these words` })
+  const coveredRow = (entry, key) => {
+    const reveal = exportKeys
+      ? inlineAction('Private key', ICONS.key, () => {
+          reveal.remove()
+          row.after(keyBlock(entry, key))
+        })
+      : null
+    const row = tile({ icon: ICONS.check, tone: 'mint', title: entry.name, sub: `${entry.chain.name} · comes back with these words`, aside: reveal })
+    return row
+  }
+
+  // Derived again from the words already on screen; the private half is wiped once it is text.
+  const keyBlock = (entry, { publicKey, permission }) => {
+    const key = ownerKeyOf(root, entry.chain, publicKey)
+    if (!key) return banner('warn', `The key of ${entry.name} is not among the first slots of these words.`)
+    const wif = key.privateKey.toWif()
+    key.privateKey.data.array.fill(0)
+    return stack([
+      banner('danger', `Anyone with this key controls ${entry.name}. Never paste it into a website and never send it to anyone.`),
+      secretKey(wif),
+      note(`The ${permission} key, in the classic format starting with 5 — Anchor, cleos and other wallets accept it.`),
+    ])
+  }
 
   // Owner indexes are handed out here too: `get_accounts_by_authorizers` lags, and two
   // accounts covered in a row would share a key. An index is taken once a node took the
@@ -1561,7 +1514,8 @@ async function coverageSection(passkey, root, out) {
 
   const rows = await Promise.all(
     entries.map(async (entry) => {
-      if (recoverable.has(`${entry.chain.chainId}:${entry.name}`)) return coveredRow(entry)
+      const key = wordsKey.get(accountId(entry.chain.chainId, entry.name))
+      if (key) return coveredRow(entry, key)
 
       const owner = await permissionAuthority(entry.chain, entry.name, 'owner').catch(() => null)
       if (owner?.keys.some((key) => key.key === passkey.publicKey)) {
@@ -1579,7 +1533,7 @@ async function coverageSection(passkey, root, out) {
               row.disabled = false
               return
             }
-            row.replaceWith(coveredRow(entry))
+            row.replaceWith(coveredRow(entry, { publicKey: key.publicKey, permission: 'owner' }))
           },
         })
         return row
