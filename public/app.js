@@ -917,7 +917,8 @@ function signingPanel(entry, { onState, onRemove, onExport }) {
   const render = (busyText) => {
     if (!busyText) onState(level)
 
-    box.replaceChildren(
+    // replaceChildren, unlike el(), prints null as "null".
+    box.replaceChildren(...[
       el('div', { className: 'level-head' }, [
         el('span', { className: 'level-label', textContent: 'Signing' }),
         segmented(LEVELS, level, (next) => switchTo(next), { disabled: Boolean(busyText), tip: levelTip }),
@@ -937,7 +938,7 @@ function signingPanel(entry, { onState, onRemove, onExport }) {
             exporter(),
             remove(),
           ]),
-    )
+    ].filter(Boolean))
   }
 
   // Each check and switch takes a new generation: a stale check must not undo the user's choice.
@@ -2374,6 +2375,11 @@ function importConfirm(passkey, on, privateKey, publicKey, found, flow = null) {
 
       for (const { secret, scope, n } of hotKeys) await adoptHotKey(secret, scope, n)
       for (const name of names) markPicked(on.chainId, name)
+      // The person saw these and kept them, so sign-in does not warn about them again.
+      for (const name of names) {
+        const oldKey = removeOld ? [] : ['owner', on.permission].map((permission) => seenId(name, permission, { id: publicKey }))
+        keptAtImport(on, name, [...[...seen].filter((id) => id.startsWith(`${name}@`)), ...oldKey])
+      }
 
       // Go straight back unless there is a note to show.
       if (flow?.reply) {
@@ -2544,8 +2550,8 @@ function loginScreen(incoming) {
             tone: 'amber',
             title: `${entry.name} is not only yours`,
             text:
-              'Besides your passkey and your 24 words, these control the account: whoever holds them can take ' +
-              'everything on it. Continue only if each one is yours — a wallet or device you linked.',
+              'Besides your passkey, these control the account: whoever holds them can take everything on it. ' +
+              'Continue only if each one is yours — like the key of a wallet you imported or linked.',
             details: consequences(strangers),
             confirm: 'Continue anyway',
             cancel: 'Back',
@@ -2641,21 +2647,38 @@ function loginScreen(incoming) {
  * looks on chain just like an account linked from Anchor. Only the person knows a linked
  * wallet is theirs, and only the 24 words tell an owner key of ours from a stranger's. So
  * keys this browser doesn't hold cost one touch, and whatever is still not ours after it
- * is shown. An authority checked once is remembered until it changes.
+ * is shown. What the person kept at import (`keptAtImport`) was shown then and is not
+ * asked again. An authority checked once is remembered until it changes.
  *
  * @returns {Promise<{ authority: string, strangers: string[] }>} `strangers` for people
  */
 async function whoElseControls(entry, work) {
+  const id = accountId(entry.chain.chainId, entry.name)
   const permissions = await agreedPermissions(entry.chain, entry.name)
   const authority = JSON.stringify(permissions)
-  if (cachedValue('trusted', accountId(entry.chain.chainId, entry.name)) === authority) return { authority, strangers: [] }
+  if (cachedValue('trusted', id) === authority) return { authority, strangers: [] }
+
+  const kept = new Set(cachedValue('kept', id) ?? [])
+  const isKept = (permission, other) => kept.has(seenId(entry.name, permission.name, other))
 
   const ours = await ourKeys()
-  const unknown = permissions.flatMap((permission) => permission.keys.map(({ key }) => key)).filter((key) => !ours.has(key))
+  const unknown = permissions.flatMap((permission) =>
+    permission.keys.map(({ key }) => key).filter((key) => !ours.has(key) && !isKept(permission, { id: key }))
+  )
   if (unknown.length) for (const key of await keysFromPasskey(entry, new Set(unknown), work)) ours.add(key)
 
-  const strangers = permissions.flatMap((permission) => othersOn(permission, ours).map((other) => `${permission.name}: ${other.text}`))
+  const strangers = permissions.flatMap((permission) =>
+    othersOn(permission, ours)
+      .filter((other) => !isKept(permission, other))
+      .map((other) => `${permission.name}: ${other.text}`)
+  )
   return { authority, strangers }
+}
+
+/** `seenId`s an import showed or left on the account by choice; sign-in doesn't ask about them again. */
+function keptAtImport(on, name, ids) {
+  const id = accountId(on.chainId, name)
+  rememberValue('kept', id, [...new Set([...(cachedValue('kept', id) ?? []), ...ids])])
 }
 
 /**
