@@ -1401,7 +1401,8 @@ function linkGuideScreen(passkey) {
 
 // The words restore an account only if its owner has a key from them; add it where the passkey signs owner.
 // `confirm` — the app asked for a backup: Done waits for "I saved these words".
-// `exportKeys` — home only: a window the app opened never offers a key out.
+// `exportKeys` — a key next to each account the words bring back. Not in the backup the app asks for:
+// that one is about saving the words.
 function phraseScreen(passkey, { back = homeScreen, done: finish = back, confirm = false, links = [], exportKeys = false } = {}) {
   const out = stack([])
   const step = stack([])
@@ -3526,7 +3527,7 @@ function settingsScreen({ request, reply }) {
                   title: 'Recovery phrase',
                   sub: 'The way back in if you lose this passkey',
                   aside: icon(ICONS.chevron, 14),
-                  onclick: () => phraseScreen(entry.passkey, { back: draw }),
+                  onclick: () => phraseScreen(entry.passkey, { back: draw, exportKeys: true }),
                 }),
               ]),
             ]),
