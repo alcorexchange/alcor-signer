@@ -6,6 +6,9 @@
 // A hash is written only if every node that answered (at least two) agrees:
 // no single node decides what the vault trusts. Re-run after a contract update,
 // or Auto sign on it falls back to the window.
+//
+// Both modes also check that every bridge vault lists its tokens at scale 1: the
+// window shows a courier fee (canonical units on Telos) in units of the token sent.
 
 import { createHash } from 'node:crypto'
 import { readFile, writeFile } from 'node:fs/promises'
@@ -18,15 +21,7 @@ const contractsOf = (chain) =>
   [...new Set(['eosio', chain.systemToken.contract, ...Object.values(chain.alcor), chain.cpuPayer?.contract])].filter(Boolean)
 
 async function rawAbiHash(rpc, account) {
-  const response = await fetch(`${rpc}/v1/chain/get_raw_abi`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ account_name: account }),
-    signal: AbortSignal.timeout(10_000),
-  })
-  if (!response.ok) throw new Error(`${response.status} ${response.statusText}`)
-
-  const { abi, abi_hash } = await response.json()
+  const { abi, abi_hash } = await post(rpc, 'get_raw_abi', { account_name: account })
   const hash = createHash('sha256').update(Buffer.from(abi, 'base64')).digest('hex')
   if (hash !== abi_hash) throw new Error(`abi_hash ${abi_hash} does not match the bytes (${hash})`)
   return hash
@@ -43,6 +38,54 @@ async function agreedHash(chain, account) {
   if (new Set(hashes).size !== 1) throw new Error(`${chain.name} ${account}: nodes disagree — ${hashes.join(', ')}`)
   return hashes[0]
 }
+
+async function post(rpc, path, body) {
+  const response = await fetch(`${rpc}/v1/chain/${path}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(10_000),
+  })
+  if (!response.ok) throw new Error(`${response.status} ${response.statusText}`)
+  return response.json()
+}
+
+// Every listing a node reports, as `<contract> <sym> scale <n>`.
+async function vaultListings(rpc, vault) {
+  const scopes = await post(rpc, 'get_table_by_scope', { code: vault, table: 'listing', limit: 1000 })
+  if (scopes.more) throw new Error('more than 1000 token contracts listed')
+
+  const listings = []
+  for (const { scope } of scopes.rows) {
+    const table = await post(rpc, 'get_table_rows', { json: true, code: vault, scope, table: 'listing', limit: 1000 })
+    if (table.more) throw new Error(`more than 1000 tokens listed under ${scope}`)
+    for (const row of table.rows) listings.push({ contract: scope, sym: row.sym, scale: Number(row.scale) })
+  }
+  return listings
+}
+
+// Any node reporting a scale other than 1 stops the deploy: a wrong refusal costs a re-run,
+// a wrong pass shows fees smaller than they are.
+async function checkVaultScales(chain) {
+  const vault = chain.bridge?.vault
+  if (!vault) return
+
+  const answers = await Promise.allSettled(chain.rpcs.map((rpc) => vaultListings(rpc, vault)))
+  const answered = answers.filter((answer) => answer.status === 'fulfilled')
+  for (const [i, answer] of answers.entries()) {
+    if (answer.status === 'rejected') console.warn(`  ${chain.rpcs[i]}: ${answer.reason?.message ?? answer.reason}`)
+  }
+  if (!answered.length) throw new Error(`${chain.name} ${vault}: no node answered for the token listings`)
+
+  const scaled = answered.flatMap((answer) => answer.value).filter((listing) => listing.scale !== 1)
+  if (scaled.length) {
+    const names = scaled.map((listing) => `${listing.sym}@${listing.contract} scale ${listing.scale}`)
+    throw new Error(`${chain.name} ${vault}: ${names.join(', ')} — courierFee in summary.js assumes scale 1`)
+  }
+  console.log(`${chain.id.padEnd(6)} ${vault.padEnd(14)} every listing at scale 1`)
+}
+
+for (const chain of Object.values(CHAINS)) await checkVaultScales(chain)
 
 const pinned = {}
 for (const chain of Object.values(CHAINS)) {

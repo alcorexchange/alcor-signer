@@ -471,11 +471,11 @@ const networkName = (domain) => (Object.hasOwn(BRIDGE.networks, domain) ? BRIDGE
 
 // Telos out: `<domain>:<recipient>[:<fee>[:<memo>]]`, the recipient an EVM address or an account.
 function bridgeWithdraw(chain, { from, to, amount, memo }) {
-  const [domain, recipient, fee, ...rest] = memo.split(':')
-  if (!recipient) return plainTransfer(chain, { to, amount, memo })
+  const [domain, recipient, feeText, ...rest] = memo.split(':')
+  const fee = courierFee(amount, feeText)
+  if (!recipient || fee === undefined) return plainTransfer(chain, { to, amount, memo })
 
-  const note = fee && fee !== '0' ? `fee ${fee}` : undefined
-  return bridged(chain, { from, amount, to, note, network: networkName(domain), recipient, memo: rest.join(':') })
+  return bridged(chain, { from, amount, to, fee, network: networkName(domain), recipient, memo: rest.join(':') })
 }
 
 // Into Telos from a vault network: `<telos account>[:<memo>]`, or a hop further on.
@@ -488,16 +488,17 @@ function bridgeDeposit(chain, { from, to, amount, memo }) {
   return bridged(chain, { from, amount, to, network: 'Telos', legs: true, recipient, memo: rest })
 }
 
-// Through Telos to a third network: `hop.alcor:<domain>:<recipient>|<domain>:<refund>[|<memo>]`.
-// The refund leg is where a refused crossing comes back.
+// Through Telos to a third network: `hop.alcor:<domain>:<recipient>[:<fee>]|<domain>:<refund>[|<memo>]`.
+// The refund leg is where a refused crossing comes back; it carries no fee.
 function bridgeHop(chain, { from, to, amount, memo }) {
   const [destination, refund = '', ...rest] = memo.slice(BRIDGE.hop.length + 1).split('|')
-  const [domain, recipient] = splitMemo(destination)
+  const [domain, recipient, feeText, ...extra] = destination.split(':')
+  const fee = courierFee(amount, feeText)
   const [refundDomain, refundTo] = splitMemo(refund)
-  if (!recipient || !refundTo) return plainTransfer(chain, { to, amount, memo })
+  if (!recipient || fee === undefined || extra.length || !refundTo) return plainTransfer(chain, { to, amount, memo })
 
   const network = networkName(domain)
-  const leg = bridged(chain, { from, amount, to, note: 'through Telos', network, recipient, memo: rest.join('|') })
+  const leg = bridged(chain, { from, amount, to, note: 'through Telos', fee, network, recipient, memo: rest.join('|') })
   if (refundDomain === chain.bridge.domain && refundTo === from) return leg
 
   const text = `If the bridge refuses it, it comes back to ${refundTo} on ${networkName(refundDomain)}, not to ${from} on ${chain.name}.`
@@ -506,12 +507,36 @@ function bridgeHop(chain, { from, to, amount, memo }) {
 
 // The recipient lives in the memo, so it is shown whole. `legs`: whether `route.alcor` on
 // `network` may deliver to another network — only on Telos, where the bridge keeps routes.
-function bridged(chain, { from, amount, to, note, network, legs = false, recipient, memo }) {
+function bridged(chain, { from, amount, to, note, fee = null, network, legs = false, recipient, memo }) {
   const leg = { title: `Bridge ${amount.symbol} to ${network}`, out: { amount, to, note }, risks: [] }
-  if (recipient === BRIDGE.route) return routeSwap(chain, { from, amount, network, legs, memo, leg })
+  if (recipient === BRIDGE.route) return withCourierFee(routeSwap(chain, { from, amount, network, legs, memo, leg }), amount, fee, network)
 
-  const sub = [`on ${network}`, memo ? `memo “${memo}”` : null].filter(Boolean).join(' · ')
-  return { ...leg, rows: [{ dir: 'in', label: 'Arrives at', amount: recipient, sub }] }
+  const received = fee ? formatAmount({ ...amount, units: amount.units - fee.units }) : null
+  const sub = [`on ${network}`, received, memo ? `memo “${memo}”` : null].filter(Boolean).join(' · ')
+  return withCourierFee({ ...leg, rows: [{ dir: 'in', label: 'Arrives at', amount: recipient, sub }] }, amount, fee, network)
+}
+
+// The ledger's courier fee on a leg out: canonical units on Telos, taken out of the amount
+// and paid to whoever delivers it over there. Fixed when signed: the far side pays exactly
+// this, whatever the gas. Every vault lists its tokens at scale 1 (`yarn abis --check`), so a
+// canonical unit is a unit of the token sent. `null` for none, `undefined` for one the
+// ledger refuses.
+function courierFee(amount, text = '0') {
+  if (!/^\d{1,19}$/.test(text)) return undefined
+  const units = BigInt(text)
+  if (units >= amount.units) return undefined
+  return units ? { ...amount, units } : null
+}
+
+// More than a tenth goes to the courier: a broken quote, or an app paying someone else.
+function withCourierFee(leg, amount, fee, network) {
+  if (!fee) return leg
+
+  const row = { dir: 'out', label: 'Delivery fee', amount: formatAmount(fee), sub: `out of what you send · to whoever delivers it on ${network}` }
+  const risks = fee.units * 10n > amount.units
+    ? [{ kind: 'warn', text: `The delivery fee is more than a tenth of what you send: ${formatAmount(fee)} goes to whoever delivers it on ${network}, not to the recipient.` }]
+    : []
+  return { ...leg, rows: [...leg.rows, row], risks: [...leg.risks, ...risks] }
 }
 
 // `route.alcor` swaps on arrival: `<to>|<least out>@<contract>|<deadline>[|<back>]`. `to` gets
