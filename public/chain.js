@@ -193,10 +193,14 @@ export const ENVIRONMENTS = {
       'https://telos.alcor.exchange',
       'https://eos.alcor.exchange',
     ],
+    // Other sites, through the WharfKit plugin. Window only: never in `frame-ancestors`,
+    // so no Auto sign; they can only sign in and ask for signatures (`partnerRefusal`).
+    partners: [],
   },
   dev: {
     host: 'sign.localhost:8443',
     apps: ['https://[::1]:3000', 'https://localhost:3000', 'https://127.0.0.1:3000'],
+    partners: ['https://localhost:4000'],
   },
 }
 
@@ -207,5 +211,7 @@ export const ENV =
     : (Object.keys(ENVIRONMENTS).find((name) => ENVIRONMENTS[name].host === location.host) ?? null)
 
 export const ALLOWED_APP_ORIGINS = ENV ? ENVIRONMENTS[ENV].apps : []
+export const PARTNER_ORIGINS = ENV ? ENVIRONMENTS[ENV].partners : []
+export const isPartner = (origin) => PARTNER_ORIGINS.includes(origin)
 
 export const APP_URL = (ENV ? ENVIRONMENTS[ENV] : ENVIRONMENTS.prod).apps[0]

@@ -57,11 +57,11 @@ import {
   switchRow,
   wordGrid,
 } from './ui.js'
-import { ALLOWED_APP_ORIGINS, APP_URL, CHAINS, DEFAULT_CHAIN, ENV, chainById, isCpuPayerNoop, userAuthorizations } from './chain.js'
+import { ALLOWED_APP_ORIGINS, APP_URL, CHAINS, DEFAULT_CHAIN, ENV, PARTNER_ORIGINS, chainById, isCpuPayerNoop, isPartner, userAuthorizations } from './chain.js'
 import { explain } from './errors.js'
 import { formatBalance } from './format.js'
 import { accountId, cachedAccounts, cachedValue, rememberAccounts, rememberValue } from './cache.js'
-import { awaitRequest, isEmbedded, serveEmbedded } from './protocol.js'
+import { awaitRequest, isEmbedded, partnerRefusal, serveEmbedded } from './protocol.js'
 import {
   findPasskey,
   forgetMove,
@@ -243,6 +243,9 @@ const appName = (origin) => {
     return 'the app'
   }
 }
+
+// A partner's host alone can read like a part of Alcor, so its screens say whose it is.
+const partnerNote = (origin, text) => (isPartner(origin) ? note(`${appName(origin)} is not an Alcor site. ${text}`) : null)
 
 // Current network: named by the request, or the default when opened directly.
 let chain = DEFAULT_CHAIN
@@ -2404,6 +2407,8 @@ function loginScreen(incoming) {
   const { request, reply } = incoming
   const passkeys = loadPasskeys()
   const from = appName(request.appOrigin)
+  const partner = isPartner(request.appOrigin)
+  const seen = partnerNote(request.appOrigin, 'It will see the account name and public key, nothing else.')
   const out = stack([])
   const cancel = cancelLink(reply)
   const again = () => loginScreen(incoming)
@@ -2467,6 +2472,7 @@ function loginScreen(incoming) {
               ? 'No Alcor Signer passkey came back. New here? Create one. Cancelled by mistake? Try again.'
               : 'Your passkey syncs through iCloud Keychain or Google Password Manager — sign in with it.',
           }),
+          seen,
           out,
         ],
         actions: notFound
@@ -2515,7 +2521,8 @@ function loginScreen(incoming) {
         }
         rememberValue('trusted', accountId(entry.chain.chainId, entry.name), authority)
 
-        const level = await signingLevel(entry).catch(() => null)
+        // The mode steers Alcor's iframe; a partner has none.
+        const level = partner ? null : await signingLevel(entry).catch(() => null)
         const { publicKey, credentialId } = entry.passkey
         replyAndClose(reply, work, { ok: true, publicKey, credentialId, account: entry.name, level })
       },
@@ -2525,6 +2532,7 @@ function loginScreen(incoming) {
     screen({
       body: [
         pageTitle(`Sign in to ${from}`, `${chain.name} · nothing is signed and nothing moves`),
+        seen,
         section(label, [stack(rows, { tight: true })]),
         section('other options', [
           options([
@@ -3197,6 +3205,8 @@ const flowSkeleton = () =>
 async function confirmScreen({ request, reply }) {
   const passkey = findPasskey(request.publicKey)
   const from = appName(request.appOrigin)
+  // A partner gets the window only: no Auto sign, and the mode is not changed from its page.
+  const partner = isPartner(request.appOrigin)
 
   if (!passkey) {
     refuseRequest(reply, { title: 'Unknown key', text: 'This key was not created here.', error: 'Unknown key' })
@@ -3294,17 +3304,17 @@ async function confirmScreen({ request, reply }) {
   const current = session ? (session.auto ? 'auto' : 'fast') : 'passkey'
   // A new account starts on Fast: offered until the person picks a mode for it.
   const offered =
-    current === 'passkey' && choosable && signers.length === 1 && !cachedValue('picked', accountId(chain.chainId, signer.actor))
+    !partner && current === 'passkey' && choosable && signers.length === 1 && !cachedValue('picked', accountId(chain.chainId, signer.actor))
       ? 'fast'
       : current
   let choice = offered
 
   // Known only for one signer on the working permission, and with the node's answer:
   // a guessed "passkey" would switch the app off the iframe for an Auto account.
-  if (signers.length === 1 && signer.permission === chain.permission && auth) level = current
+  if (!partner && signers.length === 1 && signer.permission === chain.permission && auth) level = current
 
   // The mode belongs to one account: with several signers there is none to pick.
-  const levels = signers.length === 1
+  const levels = signers.length === 1 && !partner
     ? [
         modePicker({
           label: 'signing mode',
@@ -3429,6 +3439,7 @@ async function confirmScreen({ request, reply }) {
   screen({
     body: [
       pageTitle(summary.heading ? [`${summary.heading.lead} `, accountTag(summary.heading.account)] : summary.title, `From ${from}`),
+      partnerNote(request.appOrigin, 'Check what it asks you to sign.'),
       // Risks first: a long list of amounts must not push them under the fold.
       ...[...built.warnings, ...summary.risks].map((risk) => banner(risk.kind, risk.text)),
       summary.flows.length
@@ -3456,7 +3467,7 @@ async function confirmScreen({ request, reply }) {
 
   // Auto sign: sign and close at once, only what `autoRefusal` lets through.
   // Otherwise, or on failure, the screen stays, ready for a manual confirm.
-  if (session?.auto && !autoRefusal(chain, built)) {
+  if (!partner && session?.auto && !autoRefusal(chain, built)) {
     setBusy(confirm, 'Auto sign')
     try {
       answer({ ok: true, ...(await signTransactionWithSession(session, built.transaction, built.chainId, built.actions)) })
@@ -3644,7 +3655,7 @@ function timeoutScreen() {
         title: 'No request arrived',
         text: 'The app opened this window but sent nothing. Go back to the app and try again.',
       }),
-      section('accepted from', [card(ALLOWED_APP_ORIGINS.map(line))]),
+      section('accepted from', [card([...ALLOWED_APP_ORIGINS, ...PARTNER_ORIGINS].map(line))]),
       ENV === 'dev'
         ? note(
             'localhost, [::1] and 127.0.0.1 are three different origins, even when they are one dev server. ' +
@@ -3710,7 +3721,9 @@ if (isEmbedded()) {
       throw error
     }
 
-    if (incoming.request.kind === 'login') loginScreen(incoming)
+    const refusal = isPartner(incoming.request.appOrigin) ? partnerRefusal(incoming.request) : null
+    if (refusal) refuseRequest(incoming.reply, { title: 'Not supported', text: refusal })
+    else if (incoming.request.kind === 'login') loginScreen(incoming)
     else if (incoming.request.kind === 'finish') finishScreen(incoming)
     else if (incoming.request.kind === 'backup') backupScreen(incoming)
     else if (incoming.request.kind === 'enroll') enrollScreen(incoming)

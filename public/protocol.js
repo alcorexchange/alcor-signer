@@ -6,7 +6,24 @@
 //
 // Already real: origin is checked on both ends, targetOrigin is explicit, never '*'.
 
-import { ALLOWED_APP_ORIGINS } from './chain.js'
+import { ALLOWED_APP_ORIGINS, PARTNER_ORIGINS } from './chain.js'
+
+// A window answers Alcor and partners; the iframe (`serveEmbedded`) only Alcor.
+const WINDOW_ORIGINS = [...ALLOWED_APP_ORIGINS, ...PARTNER_ORIGINS]
+
+// The plugin ships on npm apart from this site, so a partner names the protocol it speaks.
+// Alcor's app deploys with the Signer and sends none.
+export const PARTNER_PROTOCOL = 1
+
+/** Why a partner's request is refused, or null. A partner signs in and asks for signatures, nothing else. */
+export function partnerRefusal(request) {
+  if (request.version !== PARTNER_PROTOCOL) {
+    return 'This site uses a version of the Alcor Signer plugin this window does not speak. The site needs to update it.'
+  }
+  if (request.kind === 'login' && request.create !== true) return null
+  if (request.kind === 'sign') return null
+  return 'Other sites can only sign in and ask for signatures.'
+}
 
 /**
  * @returns {Promise<{request: object, reply: (result: object) => void}> | null}
@@ -21,9 +38,9 @@ export function awaitRequest() {
     console.info('[vault] opened by', document.referrer || 'unknown opener')
     // A variable, not a named function expression: the timer below needs to see it.
     const onMessage = (event) => {
-      if (!ALLOWED_APP_ORIGINS.includes(event.origin)) {
+      if (!WINDOW_ORIGINS.includes(event.origin)) {
         if (String(event.data?.type ?? '').startsWith('vault:')) {
-          console.warn('[vault] IGNORED request from', event.origin, '— not in ALLOWED_APP_ORIGINS')
+          console.warn('[vault] IGNORED request from', event.origin, '— not an app or a partner')
         }
         return
       }
@@ -60,8 +77,8 @@ export function awaitRequest() {
     window.addEventListener('message', onMessage)
 
     // The app waits for this so it doesn't post into a page that hasn't loaded.
-    console.info('[vault] → ready, announcing to', ALLOWED_APP_ORIGINS)
-    for (const origin of ALLOWED_APP_ORIGINS) {
+    console.info('[vault] → ready, announcing to', WINDOW_ORIGINS)
+    for (const origin of WINDOW_ORIGINS) {
       window.opener.postMessage({ type: 'vault:ready' }, origin)
     }
   })
