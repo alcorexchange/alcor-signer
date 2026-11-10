@@ -26,6 +26,16 @@ export function hostOf(clientDataJSON) {
   return origin.hostname
 }
 
+// rpId inside a WA key: after point and presence, a varuint32 length and the string.
+export function rpIdBytes(data) {
+  let at = 34
+  while (at < data.length && data[at] & 0x80) at++
+  return data.subarray(at + 1)
+}
+
+/** The site a `PUB_WA_` key signs for. The chain holds it to that site, so it can be shown as fact. */
+export const passkeyHost = (key) => new TextDecoder().decode(rpIdBytes(PublicKey.from(key).data.array))
+
 // The point comes from `authData` in `attestationObject`, not `getPublicKey()`: password
 // managers that replace WebAuthn don't always implement every method.
 export function createPublic(response) {

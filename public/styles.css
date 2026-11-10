@@ -1066,3 +1066,12 @@ button.sign .spinner { border-color: var(--primary-ink-soft); border-top-color: 
 .action-links button.danger:hover:not(:disabled) { background: var(--sell-soft); color: var(--sell); }
 .action-links .sep { color: var(--text-faint); font-size: 11px; user-select: none; }
 
+
+/* ── holders ────────────────────────────────────────────── */
+
+.holders { display: flex; flex-direction: column; border-top: 1px solid var(--border-soft); }
+.holder { display: flex; flex-direction: column; gap: 2px; padding: 9px 0; border-bottom: 1px solid var(--border-soft); }
+.holder-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; min-width: 0; }
+.holder-title { min-width: 0; overflow: hidden; font-size: 13px; color: var(--text); text-overflow: ellipsis; white-space: nowrap; }
+.holder-scope { flex: none; font-size: 11px; color: var(--text-muted); }
+.holder .mono { align-self: flex-start; text-align: left; }

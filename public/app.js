@@ -22,6 +22,7 @@ import {
   chrome,
   confirmDialog,
   consequences,
+  holderList,
   disclosure,
   el,
   errorBox,
@@ -87,7 +88,7 @@ import {
   setAutoSign,
 } from './session.js'
 import { k1PublicKey } from './k1.js'
-import { isPasskeyOf } from './webauthn.js'
+import { isPasskeyOf, passkeyHost } from './webauthn.js'
 import {
   ROOT_SALT,
   forgetFoundKeys,
@@ -1185,18 +1186,42 @@ async function ourKeys(known = []) {
   return new Set([...loadPasskeys().map((entry) => entry.publicKey), ...hot.map((key) => key.publicKey), ...known])
 }
 
-/** Who keeps a permission besides this browser. `id` is exact, `text` is for people. */
+/** A holder's key in words: its type, and for a passkey the site the chain binds it to. */
+function holderTitle(key) {
+  if (key.startsWith('PUB_WA_')) return isOurPasskey(key) ? 'Another Alcor Signer passkey' : `Passkey for ${passkeyHost(key)}`
+  if (key.startsWith('PUB_R1_')) return 'Device key'
+  return 'Private key'
+}
+
+/**
+ * Who keeps a permission besides this browser. `id` is exact, `text` is for people in one
+ * line; `title` and `value` are the same for `holderList`.
+ */
 function othersOn(auth, ours) {
   return [
     ...auth.keys
       .filter((entry) => !ours.has(entry.key))
-      .map((entry) => ({ id: entry.key, text: `Another key: ${shortKey(entry.key)}` })),
+      .map((entry) => ({ id: entry.key, text: `Another key: ${shortKey(entry.key)}`, title: holderTitle(entry.key), value: entry.key })),
     ...auth.accounts.map(({ permission: level }) => {
       const id = `${level.actor}@${level.permission}`
-      return { id, text: `Another account: ${id}` }
+      return { id, text: `Another account: ${id}`, title: 'Another account', value: id }
     }),
-    ...auth.waits.map((entry) => ({ id: `wait ${entry.wait_sec}`, text: `A time delay of ${entry.wait_sec} s` })),
+    ...auth.waits.map((entry) => {
+      const text = `A time delay of ${entry.wait_sec} s`
+      return { id: `wait ${entry.wait_sec}`, text, title: text, value: null }
+    }),
   ]
+}
+
+/** One row per holder with every permission it sits on: the same key on owner and active is one fact. */
+function holderRows(items) {
+  const rows = new Map()
+  for (const { permission, other } of items) {
+    const row = rows.get(other.id) ?? { title: other.title, value: other.value, permissions: [] }
+    row.permissions.push(permission)
+    rows.set(other.id, row)
+  }
+  return [...rows.values()].map(({ permissions, ...row }) => ({ ...row, scope: permissions.join(' · ') }))
 }
 
 const seenId = (account, permission, other) => `${account}@${permission} ${other.id}`
@@ -2251,7 +2276,7 @@ function importConfirm(passkey, on, privateKey, publicKey, found, flow = null) {
 
     stays.replaceChildren(
       section('also has access', [
-        consequences(others.map(({ name, permission, other }) => `${name}@${permission} · ${other.text}`)),
+        holderList(holderRows(others.map(({ name, permission, other }) => ({ permission: `${name}@${permission}`, other })))),
         note('They keep access as before: the import does not touch them. To cut one off, remove it in the wallet that holds it.'),
       ])
     )
@@ -2509,12 +2534,12 @@ function loginScreen(incoming) {
           const yes = await confirmDialog({
             icon: ICONS.alert,
             tone: 'amber',
-            title: `${entry.name} is not only yours`,
+            title: `Other keys also control ${entry.name}`,
             text:
-              'Besides your passkey, these control the account: whoever holds them can take everything on it. ' +
-              'Continue only if each one is yours — like the key of a wallet you imported or linked.',
-            details: consequences(strangers),
-            confirm: 'Continue anyway',
+              'Fine if they are yours: a wallet you imported or linked, or Alcor Signer on another device. ' +
+              'If you don’t recognise one, go back — whoever holds it can take everything on the account.',
+            details: holderList(holderRows(strangers)),
+            confirm: 'They are mine — continue',
             cancel: 'Back',
           })
           if (!yes) return again()
@@ -2633,7 +2658,7 @@ async function whoElseControls(entry, work) {
   const strangers = permissions.flatMap((permission) =>
     othersOn(permission, ours)
       .filter((other) => !isKept(permission, other))
-      .map((other) => `${permission.name}: ${other.text}`)
+      .map((other) => ({ permission: permission.name, other }))
   )
   return { authority, strangers }
 }

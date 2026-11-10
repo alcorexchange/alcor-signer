@@ -707,6 +707,22 @@ export function confirmDialog({ icon: paths, tone = '', title, text, details = n
   })
 }
 
+/** Who else holds an account: one row per holder, the permissions it sits on to the right. */
+export const holderList = (rows) =>
+  el(
+    'div',
+    { className: 'holders' },
+    rows.map(({ title, value, scope }) =>
+      el('div', { className: 'holder' }, [
+        el('div', { className: 'holder-head' }, [
+          el('span', { className: 'holder-title', textContent: title }),
+          el('span', { className: 'holder-scope', textContent: scope }),
+        ]),
+        value ? mono(value) : null,
+      ])
+    )
+  )
+
 export const consequences = (items) =>
   el('ul', { className: 'consequences' }, items.map((text) => el('li', { textContent: text })))
 

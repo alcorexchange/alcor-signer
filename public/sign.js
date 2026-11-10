@@ -18,6 +18,7 @@ import { CHAINS } from './chain.js'
 import { signDigest, signDigestWithPrf } from './passkey.js'
 import { signK1 } from './k1.js'
 import { signWithSession } from './session.js'
+import { rpIdBytes } from './webauthn.js'
 
 const clients = new Map()
 
@@ -539,14 +540,7 @@ export function compareKeys(a, b) {
   const [p, q] = [x.data.array, y.data.array]
   for (let i = 0; i < 34; i++) if (p[i] !== q[i]) return p[i] - q[i]
 
-  return compareBytes(rpidBytes(p), rpidBytes(q))
-}
-
-// rpId inside a WA key: after point and presence, a varuint32 length and the string.
-function rpidBytes(data) {
-  let at = 34
-  while (at < data.length && data[at] & 0x80) at++
-  return data.subarray(at + 1)
+  return compareBytes(rpIdBytes(p), rpIdBytes(q))
 }
 
 function compareBytes(p, q) {
