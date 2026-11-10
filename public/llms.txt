@@ -44,11 +44,41 @@ All four share one passkey and one recovery phrase. EVM networks are planned thr
 
 ## Who can use it
 
-Right now Alcor Signer answers only Alcor Exchange apps: `alcor.exchange`, `app.alcor.exchange` and the network subdomains. A request from any other site is ignored.
+- **Alcor Exchange apps** (`alcor.exchange`, `app.alcor.exchange` and the network subdomains) get everything above, Auto sign included.
+- **Other dApps** connect through the WharfKit wallet plugin `@alcorexchange/wallet-plugin-alcor-signer`. This is early access: Alcor Signer answers only the sites on its list, so a dApp sends the Alcor team its exact origins (production and staging) before it integrates. Requests from any other site are ignored.
 
-Integration for other dApps is planned as a WharfKit wallet plugin. It is not available yet, and this file will describe it when it is.
+A dApp gets the Alcor Signer window and nothing more:
+
+- Sign in to an existing account, and sign transactions. A dApp can't ask the window to create a wallet or open account settings.
+- Every transaction opens the window and takes a click. No Auto sign, and the dApp can't read or change the signing mode. If the user has turned on Fast, it signs with the button, without Face ID.
+- The sign-in and signing screens say the site is not an Alcor site.
+- No embedding: a dApp can't put Alcor Signer in an iframe.
+- The dApp pays its own CPU and NET.
+- The rest is as for Alcor: Alcor Signer builds the transaction, and permission changes are never signed for an app.
+
+## Integration
+
+```ts
+import { SessionKit } from '@wharfkit/session'
+import { WebRenderer } from '@wharfkit/web-renderer'
+import { WalletPluginAlcorSigner } from '@alcorexchange/wallet-plugin-alcor-signer'
+
+const sessionKit = new SessionKit({
+  appName: 'yourapp',
+  chains: [{ id: '1064487b3cd1a897ce03ae5b6a865651747e2e152090f99c1d19d44e01aea5a4', url: 'https://wax.greymass.com' }],
+  ui: new WebRenderer(),
+  walletPlugins: [new WalletPluginAlcorSigner()],
+})
+```
+
+- Alcor Signer takes the actions and sets the reference block and expiration from its own nodes. The plugin returns that transaction with the signatures and fails unless its actions match the dApp's byte for byte. This needs Session Kit's `allowModify`, which is on by default.
+- Context-free actions, transaction extensions and `delay_sec` are refused.
+- Browser only. The key is a passkey on the user's device, so there is no Node.js or server-side signing.
+- Safari opens a window only right after a click. When it holds the window back, the plugin shows a button in the WharfKit dialog that opens it.
 
 ## Links
 
 - [Alcor Signer](https://sign.alcor.exchange): the wallet
 - [Alcor Exchange](https://alcor.exchange): the DEX that uses it
+- [WharfKit plugin on npm](https://www.npmjs.com/package/@alcorexchange/wallet-plugin-alcor-signer)
+- [Plugin source](https://github.com/alcorexchange/wallet-plugin-alcor-signer)
