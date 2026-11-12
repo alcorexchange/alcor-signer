@@ -195,7 +195,12 @@ export const ENVIRONMENTS = {
     ],
     // Other sites, through the WharfKit plugin. Window only: never in `frame-ancestors`,
     // so no Auto sign; they can only sign in and ask for signatures (`partnerRefusal`).
-    partners: [],
+    partners: [
+      // NFT Battle Miners (WAX)
+      'https://nftbattleminers.com',
+      'https://game.nftbattleminers.com',
+      'https://design.nftbattleminers.com',
+    ],
   },
   dev: {
     host: 'sign.localhost:8443',
