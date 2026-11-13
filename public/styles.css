@@ -1,63 +1,65 @@
 /*
  * All vault styles. A file, not <style>: CSP is `style-src 'self'`.
  *
- * Alcor tokens are copied by value from the app's assets/css/variables.css: the vault
- * loads no file from the app, or the separate origin means nothing. Synced by hand.
+ * Colors are perps_ui's assets/css/variables.css, copied by value: the vault loads no
+ * file from the app, or the separate origin means nothing. Synced by hand.
  */
 :root {
   color-scheme: dark;
 
-  --bg: #111313;
-  --page-bg: #0b0c0c;
+  --bg: #0b0c0d;
+  --page-bg: #060707;
 
   --card-bg: rgba(255, 255, 255, 0.028);
   --card-bg-hover: rgba(255, 255, 255, 0.045);
   --card-bg-active: rgba(255, 255, 255, 0.06);
   --subtle-bg: rgba(255, 255, 255, 0.055);
+  --secondary-bg: #141516;
+  --secondary-bg-hover: #18191b;
+  --secondary-bg-active: #202123;
 
-  --border: rgba(255, 255, 255, 0.075);
-  --border-strong: rgba(255, 255, 255, 0.13);
-  --border-soft: rgba(255, 255, 255, 0.045);
+  --border: rgba(255, 255, 255, 0.08);
+  --border-strong: rgba(255, 255, 255, 0.12);
+  --border-soft: rgba(255, 255, 255, 0.05);
 
-  /* Muted on purpose: near-white on near-black blurs into a glow. */
-  --text: #e2e6e4;
-  --text-secondary: #b4bbb8;
-  --text-muted: #868e8b;
-  --text-faint: #5e6563;
+  --text: #f6fefd;
+  --text-secondary: #d2dad7;
+  --text-muted: #949e9c;
+  --text-faint: #6b7375;
 
-  --primary: #34d399;
-  --primary-hover: #4fdcaa;
-  --primary-ink: #04150e;
-  --primary-fill: #3ad59d;
-  --primary-fill-hover: #52deab;
-  --primary-fill-active: #2fc48e;
-  --primary-line: rgba(52, 211, 153, 0.24);
-  --primary-border: rgba(52, 211, 153, 0.4);
+  --primary: #39d998;
+  --primary-hover: #4de6a5;
+  --primary-ink: #0b0c0d;
+  --primary-fill: #39d998;
+  --primary-fill-hover: #4de6a5;
+  --primary-fill-active: #2ec184;
+  --primary-line: rgba(57, 217, 152, 0.24);
+  --primary-border: rgba(57, 217, 152, 0.4);
   --account: color-mix(in srgb, var(--primary) 55%, var(--text));
 
-  --sell: #f07189;
-  --sell-soft: rgba(240, 113, 137, 0.1);
-  --warning: #f2c14e;
-  --caution: #d9b563;
-  --warning-soft: rgba(242, 193, 78, 0.08);
-  --warning-line: rgba(242, 193, 78, 0.24);
-  --error: #f06262;
-  --error-soft: rgba(240, 98, 98, 0.09);
-  --error-line: rgba(240, 98, 98, 0.3);
+  --sell: #ed7088;
+  --sell-soft: rgba(237, 112, 136, 0.1);
+  --warning: #fae157;
+  --caution: #e3cc5a;
+  --warning-soft: rgba(250, 225, 87, 0.07);
+  --warning-line: rgba(250, 225, 87, 0.24);
+  --error: #ef4444;
+  --error-soft: rgba(239, 68, 68, 0.09);
+  --error-line: rgba(239, 68, 68, 0.3);
 
   /* Exact values once inlined in rules; named so every color lives here. */
-  --sell-line: rgba(240, 113, 137, 0.4);
+  --sell-line: rgba(237, 112, 136, 0.4);
   --track-bg: rgba(255, 255, 255, 0.04);
   --track-on: rgba(255, 255, 255, 0.08);
-  --input-bg: #181b1a;
+  --input-bg: #141516;
   --error-text: #ffb4b4;
-  --warning-text: #efdca6;
+  --warning-text: #f3e7a8;
   --check-line: rgba(255, 255, 255, 0.14);
   --skeleton-bg: rgba(255, 255, 255, 0.07);
-  --backdrop: rgba(0, 0, 0, 0.62);
+  --backdrop: rgba(0, 0, 0, 0.6);
   --fill-gloss: rgba(255, 255, 255, 0.28);
   --fill-shadow: rgba(0, 0, 0, 0.35);
-  --primary-ink-soft: rgba(4, 21, 14, 0.25);
+  --primary-ink-soft: rgba(11, 12, 13, 0.25);
 
   --font: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   --mono: ui-monospace, 'SF Mono', Menlo, Monaco, 'Courier New', monospace;
@@ -963,21 +965,27 @@ button.secret-copy.done { color: var(--primary); border-color: var(--primary-lin
 dialog.confirm {
   width: min(340px, calc(100vw - 32px));
   padding: 0;
-  border: 1px solid var(--border-strong);
+  border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--bg);
   color: var(--text);
 }
-dialog.confirm::backdrop { background: var(--backdrop); }
+dialog.confirm::backdrop { background: var(--backdrop); backdrop-filter: blur(4px); }
 
-.confirm-body { display: flex; flex-direction: column; gap: 8px; padding: 22px 20px 16px; }
+.confirm-body { display: flex; flex-direction: column; gap: 8px; padding: 22px 20px 20px; }
 .confirm-icon { display: flex; margin-bottom: 4px; color: var(--primary); }
 .confirm-icon.amber { color: var(--caution); }
 .confirm-title { margin: 0; font-size: 16px; font-weight: 500; letter-spacing: -0.01em; }
 .confirm-text { margin: 0; font-size: 13px; line-height: 1.55; color: var(--text-secondary); }
-.confirm-actions { display: flex; flex-direction: column; gap: 4px; margin-top: 12px; }
-.confirm-actions button.quiet { border-color: transparent; color: var(--text-muted); }
-.confirm-actions button.quiet:hover:not(:disabled) { background: none; color: var(--text); }
+
+/* Both answers one size. The safe one is focused on open (see confirmDialog): its ring
+   sits on its own edge, not 2px outside, or it reads as a second, misaligned button. */
+.confirm-actions { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
+.confirm-actions button { height: 46px; padding-top: 0; padding-bottom: 0; }
+.confirm-actions button.quiet { border-color: transparent; background: var(--secondary-bg); color: var(--text-secondary); font-size: 14px; }
+.confirm-actions button.quiet:hover:not(:disabled) { border-color: transparent; background: var(--secondary-bg-hover); color: var(--text); }
+.confirm-actions button.quiet:active:not(:disabled) { background: var(--secondary-bg-active); }
+.confirm-actions button:focus-visible { outline-offset: -1px; }
 
 /* ── buttons ────────────────────────────────────────────── */
 
