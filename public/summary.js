@@ -9,6 +9,7 @@
 
 import { groupDigits } from './format.js'
 import { BRIDGE, isCpuPayerNoop } from './chain.js'
+import { Bytes, Checksum256 } from './vendor/wharfkit.js'
 
 /**
  * @typedef {{ units: bigint, precision: number, symbol: string, contract: string }} Amount
@@ -159,6 +160,7 @@ const DECODERS = [
   { match: (chain, a) => LIGHT_CLIENT_PROOFS.has(a.name) && Object.hasOwn(chain.bridge?.lightClients ?? {}, a.account), decode: bridgeProof },
   { match: (chain, a) => a.name === 'credit' && Object.hasOwn(chain.bridge?.gateways ?? {}, a.account), decode: bridgeCredit },
   { match: (chain, a) => a.account === chain.bridge?.contract && a.name === 'claim', decode: bridgeClaim },
+  { match: (chain, a) => Boolean(chain.bridge) && a.account === BRIDGE.route && a.name === 'cancel', decode: routeCancel },
   { match: (chain, a) => a.name === 'transfer', decode: transfer },
   { match: (chain, a) => isTokenOpen(a), decode: tokenOpen },
 ]
@@ -441,7 +443,7 @@ function systemAction(chain, action) {
   return { ...leg, rows: leg.rows.filter(Boolean) }
 }
 
-// ── bridge.alcor: Telos ↔ Ethereum, BNB Chain, Polygon, WAX, XPR Network, Vaulta ──
+// ── bridge.alcor: Telos ↔ Ethereum, BNB Chain, Polygon, WAX, XPR, Vaulta, Sui, TON, NEAR ──
 //
 // A deposit lands on Telos in two steps: a proof anyone may push (the light client learns
 // a block, the gateway `credit`s the deposit out of it), then the owner's `claim`. A proof
@@ -467,53 +469,102 @@ function bridgeClaim(chain, action) {
   }
 }
 
+// Only the order's `back` may sign it, and it takes the order as it arrived, unswapped.
+function routeCancel(chain, action) {
+  return {
+    title: 'Take bridged tokens unswapped',
+    rows: [{ dir: 'in', label: 'You take as it arrived', amount: `swap #${action.data?.id}`, sub: `from ${BRIDGE.route} · not swapped` }],
+    risks: [],
+  }
+}
+
 const networkName = (domain) => (Object.hasOwn(BRIDGE.networks, domain) ? BRIDGE.networks[domain] : `network #${domain}`)
 
-// Telos out: `<domain>:<recipient>[:<fee>[:<memo>]]`, the recipient an EVM address or an account.
-function bridgeWithdraw(chain, { from, to, amount, memo }) {
-  const [domain, recipient, feeText, ...rest] = memo.split(':')
-  const fee = courierFee(amount, feeText)
-  if (!recipient || fee === undefined) return plainTransfer(chain, { to, amount, memo })
+// A leg, as the ledger reads a withdrawal: `<domain>:<recipient>[:<fee>[:<memo>]]`. The fee is
+// in canonical units of what the leg carries; the memo, everything after the third colon, is
+// what the far side pays out with. `null` for one the ledger refuses.
+function parseLeg(text) {
+  const [domain, recipient, feeText, ...rest] = text.split(':')
+  const memo = rest.join(':')
+  if (!/^[1-9]\d{0,19}$/.test(domain) || !recipient) return null
+  if (feeText !== undefined && !/^\d{1,19}$/.test(feeText)) return null
+  if (rest.length && !memo) return null
 
-  return bridged(chain, { from, amount, to, fee, network: networkName(domain), recipient, memo: rest.join(':') })
+  return { domain, network: networkName(domain), recipient, feeText, memo }
+}
+
+// Who the far side pays. To NEAR the recipient is the sha256 of the account id and the memo
+// is the id in the clear; the ledger pays the hash whatever the memo says, so the name is
+// shown only when it matches.
+function farSide({ domain, network, recipient, memo }) {
+  if (domain !== BRIDGE.near || !memo) return { network, recipient, memo, risks: [] }
+
+  const hash = `0x${Checksum256.hash(Bytes.from(memo, 'utf8')).hexString}`
+  if (hash === recipient.toLowerCase()) return { network, recipient: memo, memo: '', risks: [] }
+
+  const text = `The memo names ${memo} on NEAR, but the tokens go to another account: ${recipient}.`
+  return { network, recipient, memo, risks: [{ kind: 'danger', text }] }
+}
+
+// Telos out: a leg, the recipient an address or an account of the leg's network.
+function bridgeWithdraw(chain, { from, to, amount, memo }) {
+  const leg = parseLeg(memo)
+  const fee = leg ? courierFee(amount, leg.feeText) : undefined
+  if (fee === undefined) return unreadBridgeMemo(chain, { to, amount, memo })
+
+  return bridged(chain, { from, amount, to, fee, ...farSide(leg) })
 }
 
 // Into Telos from a vault network: `<telos account>[:<memo>]`, or a hop further on.
 function bridgeDeposit(chain, { from, to, amount, memo }) {
   if (memo.startsWith(`${BRIDGE.hop}:`)) return bridgeHop(chain, { from, to, amount, memo })
 
-  const [recipient, rest] = splitMemo(memo)
-  if (!recipient) return plainTransfer(chain, { to, amount, memo })
+  const at = memo.indexOf(':')
+  const [recipient, rest] = at < 0 ? [memo, ''] : [memo.slice(0, at), memo.slice(at + 1)]
+  if (!recipient) return unreadBridgeMemo(chain, { to, amount, memo })
 
   return bridged(chain, { from, amount, to, network: 'Telos', legs: true, recipient, memo: rest })
 }
 
-// Through Telos to a third network: `hop.alcor:<domain>:<recipient>[:<fee>]|<domain>:<refund>[|<memo>]`.
-// The refund leg is where a refused crossing comes back; it carries no fee.
+// Through Telos to a third network: `hop.alcor:<leg>|<domain>:<refund>[|<memo>]`. The refund is
+// where a refused crossing comes back, with no fee. The far side's memo follows the leg's fee
+// or comes third, never both.
 function bridgeHop(chain, { from, to, amount, memo }) {
   const [destination, refund = '', ...rest] = memo.slice(BRIDGE.hop.length + 1).split('|')
-  const [domain, recipient, feeText, ...extra] = destination.split(':')
-  const fee = courierFee(amount, feeText)
-  const [refundDomain, refundTo] = splitMemo(refund)
-  if (!recipient || fee === undefined || extra.length || !refundTo) return plainTransfer(chain, { to, amount, memo })
+  const leg = parseLeg(destination)
+  const back = parseLeg(refund)
+  const fee = leg ? courierFee(amount, leg.feeText) : undefined
+  if (fee === undefined || !back || back.feeText !== undefined || (leg.memo && rest.length)) {
+    return unreadBridgeMemo(chain, { to, amount, memo })
+  }
 
-  const network = networkName(domain)
-  const leg = bridged(chain, { from, amount, to, note: 'through Telos', fee, network, recipient, memo: rest.join('|') })
-  if (refundDomain === chain.bridge.domain && refundTo === from) return leg
+  const far = farSide({ ...leg, memo: leg.memo || rest.join('|') })
+  const out = bridged(chain, { from, amount, to, note: 'through Telos', fee, ...far })
+  if (back.domain === chain.bridge.domain && back.recipient === from) return out
 
-  const text = `If the bridge refuses it, it comes back to ${refundTo} on ${networkName(refundDomain)}, not to ${from} on ${chain.name}.`
+  const text = `If the bridge refuses it, it comes back to ${back.recipient} on ${back.network}, not to ${from} on ${chain.name}.`
+  return { ...out, risks: [...out.risks, { kind: 'warn', text }] }
+}
+
+// The bridge parks what it cannot read and sends it home later, or refuses it.
+function unreadBridgeMemo(chain, transfer) {
+  const leg = plainTransfer(chain, transfer)
+  const text = 'Alcor does not recognise this bridge memo — there is no way to check where it arrives.'
   return { ...leg, risks: [...leg.risks, { kind: 'warn', text }] }
 }
 
 // The recipient lives in the memo, so it is shown whole. `legs`: whether `route.alcor` on
 // `network` may deliver to another network — only on Telos, where the bridge keeps routes.
-function bridged(chain, { from, amount, to, note, fee = null, network, legs = false, recipient, memo }) {
-  const leg = { title: `Bridge ${amount.symbol} to ${network}`, out: { amount, to, note }, risks: [] }
-  if (recipient === BRIDGE.route) return withCourierFee(routeSwap(chain, { from, amount, network, legs, memo, leg }), amount, fee, network)
+function bridged(chain, { from, amount, to, note, fee = null, network, legs = false, recipient, memo, risks = [] }) {
+  const leg = { title: `Bridge ${amount.symbol} to ${network}`, out: { amount, to, note }, risks }
+  if (recipient === BRIDGE.route) {
+    const swap = routeSwap(chain, { from, amount, network, legs, memo, leg })
+    return withCourierFee(swap, amount, fee, network, 'what you send')
+  }
 
   const received = fee ? formatAmount({ ...amount, units: amount.units - fee.units }) : null
   const sub = [`on ${network}`, received, memo ? `memo “${memo}”` : null].filter(Boolean).join(' · ')
-  return withCourierFee({ ...leg, rows: [{ dir: 'in', label: 'Arrives at', amount: recipient, sub }] }, amount, fee, network)
+  return withCourierFee({ ...leg, rows: [{ dir: 'in', label: 'Arrives at', amount: recipient, sub }] }, amount, fee, network, 'what you send')
 }
 
 // The ledger's courier fee on a leg out: canonical units on Telos, taken out of the amount
@@ -524,30 +575,48 @@ function bridged(chain, { from, amount, to, note, fee = null, network, legs = fa
 function courierFee(amount, text = '0') {
   if (!/^\d{1,19}$/.test(text)) return undefined
   const units = BigInt(text)
-  if (units >= amount.units) return undefined
-  return units ? { ...amount, units } : null
+  if (!units) return null
+  return units < amount.units ? { ...amount, units } : undefined
 }
 
 // More than a tenth goes to the courier: a broken quote, or an app paying someone else.
-function withCourierFee(leg, amount, fee, network) {
+function withCourierFee(leg, base, fee, network, source) {
   if (!fee) return leg
 
-  const row = { dir: 'out', label: 'Delivery fee', amount: formatAmount(fee), sub: `out of what you send · to whoever delivers it on ${network}` }
-  const risks = fee.units * 10n > amount.units
-    ? [{ kind: 'warn', text: `The delivery fee is more than a tenth of what you send: ${formatAmount(fee)} goes to whoever delivers it on ${network}, not to the recipient.` }]
+  const row = { dir: 'out', label: 'Delivery fee', amount: formatAmount(fee), sub: `out of ${source} · to whoever delivers it on ${network}` }
+  const risks = fee.units * 10n > base.units
+    ? [{ kind: 'warn', text: `The delivery fee is more than a tenth of ${source}: ${formatAmount(fee)} goes to whoever delivers it on ${network}, not to the recipient.` }]
     : []
   return { ...leg, rows: [...leg.rows, row], risks: [...leg.risks, ...risks] }
 }
 
 // `route.alcor` swaps on arrival: `<to>|<least out>@<contract>|<deadline>[|<back>]`. `to` gets
-// at least that much; `back` (`to` when left out) gets the token that arrived, as is, when no
-// route gives the least by the deadline.
+// at least that much; `back` (`to` without its fee and memo when left out) gets the token
+// that arrived, as is, when no route gives the least by the deadline. Where `legs`, `to` is
+// a leg with its fee in the token bought, and `back` one with its fee in the token that arrived.
+//
+// A market order signs no price: zero least and `market` for the deadline, the least set by
+// Alcor's executor when it swaps, within 7 days; its leg carries no fee, which a zero least
+// leaves no room for. `|<refund>|<domain>:<from>` after it sends what is not swapped to
+// `refund` on that network.
+const MARKET = 'market'
+
 function routeSwap(chain, { from, amount, network, legs, memo, leg }) {
-  const [toText, least = '', deadline = '', backText, ...extra] = memo.split('|')
-  const to = routeDestination(toText, network, legs)
-  const back = backText === undefined ? to : routeDestination(backText, network, legs)
+  const fields = memo.split('|')
+  const [toText, least = '', deadline = ''] = fields
+  const market = deadline === MARKET
+  const refunds = market && fields.length === 5
   const minimum = parseAmountAt(least)
-  if (!to || !back || !minimum || !/^\d{1,12}$/.test(deadline) || extra.length) {
+  const to = routeTarget(chain, toText, network, legs)
+  const back = refunds ? routeRefund(fields[3], fields[4], legs)
+    : fields.length === 4 ? routeTarget(chain, fields[3], network, legs)
+    : to && { ...to, feeText: undefined, memo: '' }
+
+  const shaped = (fields.length === 3 || fields.length === 4 || refunds) && minimum && to && back && !back.memo
+  const toFee = shaped ? courierFee(minimum, to.feeText) : undefined
+  const backFee = shaped ? courierFee(amount, back.feeText) : undefined
+  const timed = market ? minimum?.units === 0n : /^\d{1,10}$/.test(deadline)
+  if (toFee === undefined || backFee === undefined || !timed) {
     return {
       ...leg,
       rows: [{ dir: 'in', label: 'Arrives at', amount: BRIDGE.route, sub: `on ${network}` }],
@@ -555,34 +624,52 @@ function routeSwap(chain, { from, amount, network, legs, memo, leg }) {
     }
   }
 
-  const by = utcDate(deadline)
-  const sub = [`on ${to.network}`, to.domain ? `bought on ${network} as ${minimum.contract} token` : `${minimum.contract} token`]
-  // The contract before 2026-10-13 swapped a zero least at any price; the current one refunds it.
-  const risks = minimum.units === 0n ? [{ kind: 'danger', text: 'No minimum was set — the swap on arrival may go through at any price.' }] : []
+  const far = to.domain ? farSide(to) : { ...to, risks: [] }
+  const unless = market ? 'if not swapped within 7 days' : `if not swapped by ${utcDate(deadline)}`
+  const sub = [`on ${far.network}`, to.domain ? `bought on ${network} as ${minimum.contract} token` : `${minimum.contract} token`]
+  if (far.memo) sub.push(`memo “${far.memo}”`)
+
+  const risks = [...far.risks]
+  // Market orders are priced by Alcor's executor. The contract before 2026-10-13 swapped a
+  // zero least at any price; the current one refunds it.
+  if (market) risks.push({ kind: 'danger', text: 'No minimum is signed — Alcor’s executor sets the price when it swaps.' })
+  else if (minimum.units === 0n) risks.push({ kind: 'danger', text: 'No minimum was set — the swap on arrival may go through at any price.' })
+
+  const less = backFee ? ` (less ${formatAmount(backFee)} for delivery)` : ''
   if (sameDestination(back, to)) {
-    sub.push(`else ${amount.symbol} if not swapped by ${by}`)
+    sub.push(`else ${amount.symbol}${less} ${unless}`)
   } else if (back.domain && back.domain === chain.bridge?.domain && back.recipient === from) {
-    sub.push(`else ${amount.symbol} back to you on ${back.network} if not swapped by ${by}`)
+    sub.push(`else ${amount.symbol} back to you on ${back.network}${less} ${unless}`)
   } else {
-    const text = `If it is not swapped by ${by}, the ${amount.symbol} goes to ${back.recipient} on ${back.network}, not to ${to.recipient}.`
-    risks.push({ kind: 'warn', text })
+    risks.push({ kind: 'warn', text: `The ${amount.symbol} goes to ${back.recipient} on ${back.network}${less} ${unless}, not to ${far.recipient}.` })
   }
 
-  return {
+  const arrives = toFee ? { ...minimum, units: minimum.units - toFee.units } : minimum
+  const swap = {
     ...leg,
-    title: `Bridge ${amount.symbol} → ${minimum.symbol} on ${to.network}`,
-    rows: [{ dir: 'in', label: 'Arrives as at least', amount: formatAmount(minimum), to: to.recipient, sub: sub.join(' · ') }],
+    title: `Bridge ${amount.symbol} → ${minimum.symbol} on ${far.network}`,
+    rows: [{ dir: 'in', label: market ? 'Arrives as' : 'Arrives as at least', amount: market ? `${minimum.symbol} at market` : formatAmount(arrives), to: far.recipient, sub: sub.join(' · ') }],
     risks,
   }
+  return withCourierFee(swap, minimum, toFee, far.network, `the ${minimum.symbol} bought`)
 }
 
-// An account on the swap's network or, where `legs`, `<domain>:<recipient>` with no fee.
-function routeDestination(text, network, legs) {
-  const [domain, recipient, ...fee] = text.split(':')
-  if (recipient === undefined) return text ? { network, recipient: text } : null
-  if (!legs || !/^[1-9]\d*$/.test(domain) || !recipient || fee.length) return null
+// An account on the swap's network or, where `legs`, a leg. The contract refuses itself, the
+// bridge and the hop as recipients.
+function routeTarget(chain, text, network, legs) {
+  if (!text.includes(':')) {
+    const own = [BRIDGE.route, BRIDGE.hop, chain.bridge?.contract ?? chain.bridge?.vault]
+    return /^[a-z1-5.]{1,12}$/.test(text) && !own.includes(text) ? { network, recipient: text, memo: '' } : null
+  }
+  return legs ? parseLeg(text) : null
+}
 
-  return { network: networkName(domain), domain, recipient }
+// A market order's refund address, a recipient with no network, on the network of the leg
+// the deposit came from.
+function routeRefund(refund, cameFrom, legs) {
+  const leg = legs ? parseLeg(cameFrom) : null
+  if (!refund || refund.includes(':') || !leg || leg.feeText !== undefined || leg.memo) return null
+  return { domain: leg.domain, network: leg.network, recipient: refund, memo: '' }
 }
 
 // EVM addresses are one address in any case.
@@ -590,11 +677,6 @@ const sameDestination = (a, b) => a.network === b.network && a.recipient.toLower
 
 const utcDate = (seconds) =>
   `${new Date(Number(seconds) * 1000).toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'UTC' })} UTC`
-
-function splitMemo(memo) {
-  const at = memo.indexOf(':')
-  return at < 0 ? [memo, ''] : [memo.slice(0, at), memo.slice(at + 1)]
-}
 
 // eosio.token's `open`: an empty balance row, so a contract that pays only into an existing
 // row (book.alcor) can pay out. No tokens move; the RAM payer pays for the row.

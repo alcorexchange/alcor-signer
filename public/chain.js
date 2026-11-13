@@ -45,6 +45,8 @@ export const CHAINS = {
         'xpr.g.alcor': 'XPR Network',
         'vlt.g.alcor': 'Vaulta',
         'sui.g.alcor': 'Sui',
+        'ton.g.alcor': 'TON',
+        'near.g.alcor': 'NEAR',
       },
     },
     // Network index in the key path from the 24 words (ADR-0010 §3). NEVER change it:
@@ -117,7 +119,8 @@ export const CHAINS = {
 
 // The bridge as its memos name it (summary.js). Domains are strings: too large for a
 // JS number. `hop` forwards through Telos to a third network; `route` swaps what arrives,
-// under the same name on every network.
+// under the same name on every network. `near`: there a recipient is the sha256 of the
+// account id, and the memo for the far side is the id in the clear.
 export const BRIDGE = {
   networks: {
     1: 'Ethereum',
@@ -127,7 +130,10 @@ export const BRIDGE = {
     '4057084141687023600': 'XPR Network',
     '12439917377594391589': 'Vaulta',
     '3856007665771390095': 'Sui',
+    '1703391080095596199': 'TON',
+    '14338890689662875897': 'NEAR',
   },
+  near: '14338890689662875897',
   hop: 'hop.alcor',
   route: 'route.alcor',
 }
