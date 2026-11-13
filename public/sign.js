@@ -16,6 +16,7 @@ import {
 import { PINNED_ABIS } from './abis.js'
 import { CHAINS } from './chain.js'
 import { signDigest, signDigestWithPrf } from './passkey.js'
+import { bookMarketIds } from './summary.js'
 import { signK1 } from './k1.js'
 import { signWithSession } from './session.js'
 import { rpIdBytes } from './webauthn.js'
@@ -55,7 +56,7 @@ async function call(chain, run) {
  * against the pinned ones: a node serving an ABI with swapped fields would show one
  * recipient on screen while the chain reads another.
  *
- * @returns {Promise<{ transaction, chainId: string, actions: object[], warnings: { kind: 'warn', text: string }[] }>}
+ * @returns {Promise<{ transaction, chainId: string, actions: object[], warnings: { kind: 'warn', text: string }[], markets: Map<string, object> }>}
  */
 export async function buildTransaction(chain, actions) {
   // One node for both, in parallel: TAPOS from get_info must match the chain the ABIs came from.
@@ -102,7 +103,86 @@ export async function buildTransaction(chain, actions) {
   }
 
   const decoded = decodeActions(transaction, abis)
-  return { transaction, chainId: chain.chainId, actions: decoded, warnings: abiWarnings(chain, abis, decoded) }
+  return {
+    transaction,
+    chainId: chain.chainId,
+    actions: decoded,
+    warnings: abiWarnings(chain, abis, decoded),
+    markets: await readBookMarkets(chain, used, decoded),
+  }
+}
+
+// The order book signs lots and prices per lot; the market row turns them into tokens on
+// screen. One lying node could change the lot or the pair, so a market counts only when a
+// second node returns the same one. Unconfirmed, it is left out and the summary warns.
+// A hostile request could name many markets: past the cap they are left out too.
+const MAX_BOOK_MARKETS = 4
+
+async function readBookMarkets(chain, used, actions) {
+  const markets = new Map()
+  const ids = bookMarketIds(chain, actions).slice(0, MAX_BOOK_MARKETS)
+
+  await Promise.all(
+    ids.map(async (id) => {
+      try {
+        markets.set(id, await confirmedMarket(chain, used, id))
+      } catch (error) {
+        console.warn('[vault] market not confirmed', id, error?.message ?? error)
+      }
+    })
+  )
+  return markets
+}
+
+async function confirmedMarket(chain, used, id) {
+  const market = await readMarket(used, chain.alcor.book, id)
+  const others = chain.rpcs.map(clientFor).filter((client) => client !== used)
+  await Promise.any(
+    others.map(async (client) => {
+      if (marketKey(await readMarket(client, chain.alcor.book, id)) !== marketKey(market)) throw new Error('another market')
+    })
+  )
+  return market
+}
+
+const marketKey = ({ base, quote, lot, feeBps }) =>
+  [base.contract, base.symbol, base.precision, quote.contract, quote.symbol, quote.precision, lot, feeBps].join('|')
+
+async function readMarket(client, book, id) {
+  const market = await tableRow(client, book, 'markets', id)
+  const [base, quote] = await Promise.all([
+    tableRow(client, book, 'tokens', String(market.base_id)).then(bookToken),
+    tableRow(client, book, 'tokens', String(market.quote_id)).then(bookToken),
+  ])
+
+  const lot = String(market.lot_size)
+  const feeBps = Math.max(Number(market.maker_bps), Number(market.taker_bps))
+  if (!/^[1-9]\d{0,19}$/.test(lot) || !Number.isInteger(feeBps) || feeBps < 0 || feeBps >= 10_000) {
+    throw new Error(`market #${id} has an odd lot or fee`)
+  }
+  return { id, base, quote, lot: BigInt(lot), feeBps }
+}
+
+async function tableRow(client, code, table, id) {
+  const { rows } = await client.v1.chain.get_table_rows({
+    code,
+    scope: code,
+    table,
+    key_type: 'i64',
+    lower_bound: id,
+    upper_bound: id,
+    limit: 1,
+    json: true,
+  })
+  if (rows.length !== 1 || String(rows[0].id) !== id) throw new Error(`${code} has no ${table} row ${id}`)
+  return rows[0]
+}
+
+function bookToken(row) {
+  const match = String(row.sym).match(/^(\d{1,2}),([A-Z]{1,7})$/)
+  const contract = String(row.contract)
+  if (!match || Number(match[1]) > 18 || !/^[a-z1-5.]{1,12}$/.test(contract)) throw new Error(`odd token row ${row.id}`)
+  return { contract, symbol: match[2], precision: Number(match[1]) }
 }
 
 // Hash the bytes we build with, not the node's `abi_hash`.

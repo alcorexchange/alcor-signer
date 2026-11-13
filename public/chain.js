@@ -4,7 +4,7 @@
 // `family` is how signing works. Within `antelope` one passkey serves every network:
 // the rpId is checked against the origin, not the chain.
 
-/** @typedef {{ id: string, family: string, name: string, chainId: string, rpcs: string[], explorer: string, logo: string, permission: string, systemToken: { symbol: string, contract: string }, alcor: { swap: string, spot?: string, liquid?: string }, bridge?: { contract?: string, lightClients?: Record<string, string>, gateways?: Record<string, string>, vault?: string, domain?: string }, slip44: number }} Chain */
+/** @typedef {{ id: string, family: string, name: string, chainId: string, rpcs: string[], explorer: string, logo: string, permission: string, systemToken: { symbol: string, contract: string }, alcor: { swap: string, spot?: string, liquid?: string, book?: string }, bridge?: { contract?: string, lightClients?: Record<string, string>, gateways?: Record<string, string>, vault?: string, domain?: string }, slip44: number }} Chain */
 
 /** @type {Record<string, Chain>} */
 export const CHAINS = {
@@ -20,8 +20,9 @@ export const CHAINS = {
     permission: 'active',
     systemToken: { symbol: 'TLOS', contract: 'eosio.token' },
     // Decides which decoder reads an action (summary.js); a swap sent elsewhere isn't a swap.
-    // No `spot`: eostokensdex is retired here, its code and ABI are gone.
-    alcor: { swap: 'swap.alcor' },
+    // No `spot`: eostokensdex is retired here, its code and ABI are gone. `book`: the
+    // order book (contracts/orderbook); Vaulta has none.
+    alcor: { swap: 'swap.alcor', book: 'book.alcor' },
     // Alcor pays CPU, as on WAX — see there.
     cpuPayer: { contract: 'cpu.alcor', action: 'noop', actor: 'cpu.alcor', permission: 'bw' },
     // The bridge hub (summary.js). Proof contracts are listed by exact name, not by the
@@ -67,7 +68,7 @@ export const CHAINS = {
     systemToken: { symbol: 'WAX', contract: 'eosio.token' },
     // `liquid`: liquid staking, which Auto sign may use (`isAlcorTrade`). OTC is not here on
     // purpose: its price is whatever the offer says, and the app picks the offer.
-    alcor: { swap: 'swap.alcor', spot: 'alcordexmain', liquid: 'liquid.alcor' },
+    alcor: { swap: 'swap.alcor', spot: 'alcordexmain', liquid: 'liquid.alcor', book: 'book.alcor' },
     // Alcor pays CPU: the app puts the payer's `noop` first and adds its signature after ours.
     cpuPayer: { contract: 'liquid.alcor', action: 'noop', actor: 'liquid.alcor', permission: 'bw' },
     // The bridge's vault here: a deposit to Telos is a transfer in (summary.js). `domain`
@@ -93,7 +94,7 @@ export const CHAINS = {
     logo: './chains/xpr.png',
     permission: 'active',
     systemToken: { symbol: 'XPR', contract: 'eosio.token' },
-    alcor: { swap: 'swap.alcor', spot: 'alcor' },
+    alcor: { swap: 'swap.alcor', spot: 'alcor', book: 'book.alcor' },
     bridge: { vault: 'bridge.alcor', domain: '4057084141687023600' },
     // XPR has no SLIP-44 index; 194 (EOS) is the fallback, and it stays even if one appears.
     slip44: 194,

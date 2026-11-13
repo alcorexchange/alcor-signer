@@ -3302,7 +3302,7 @@ async function confirmScreen({ request, reply }) {
   try {
     // The same refusal as for the request, on what is actually signed.
     assertAllowedFromApp(built.actions)
-    summary = summarize(chain, built.actions)
+    summary = summarize(chain, built.actions, built.markets)
     signers = userAuthorizations(chain, built.actions)
     signer = signers[0]
     alcorPaysCpu = built.actions.some((action) => isCpuPayerNoop(chain, action))
@@ -3619,7 +3619,7 @@ function autoRefusal(on, built) {
   if (!isAlcorTrade(on, built.actions)) return 'Not an Alcor trade — confirm it in the window'
   if (built.warnings.length) return built.warnings[0].text
 
-  const [risk] = summarize(on, built.actions).risks
+  const [risk] = summarize(on, built.actions, built.markets).risks
   return risk ? `${risk.text} Confirm it in the window.` : null
 }
 

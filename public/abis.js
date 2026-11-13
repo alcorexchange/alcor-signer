@@ -7,6 +7,7 @@ export const PINNED_ABIS = {
     "eosio": "fccb1a515b98d2232a1227279666d9a3fcd41f67fafa0d75212cc0a282564361",
     "eosio.token": "fb8452c70aa203505592aef25b696acaa1aee58805888cc9aae024b4c03af91e",
     "swap.alcor": "fc7187eb14194bb0d03f5e27dceced144777f5d31226c6c1a9e15edc53aec1a4",
+    "book.alcor": "817c21768a4d532a4f86af0b2694eee0a2baeff4bd2537ebb6754d06944eedc5",
     "cpu.alcor": "d32330e661921042efa7f2090430fb822bd8ace2f1c01748c0fe0d56a86f25a7"
   },
   "wax": {
@@ -14,13 +15,15 @@ export const PINNED_ABIS = {
     "eosio.token": "b52fab4efd51790f231ac36b4d44b440e3fb34c8f6d7fb5929ddde69f25647e7",
     "swap.alcor": "fc7187eb14194bb0d03f5e27dceced144777f5d31226c6c1a9e15edc53aec1a4",
     "alcordexmain": "8b43316996c04b0464e3042192dcc4c55a1dea6bef05349e10d434cb648e1c15",
-    "liquid.alcor": "4742294631d51bd40586de1d88bca778c829a711c558e76415bdda22802a7bb2"
+    "liquid.alcor": "4742294631d51bd40586de1d88bca778c829a711c558e76415bdda22802a7bb2",
+    "book.alcor": "5080488fd7cda1cb6697a704ad742b262eb4be3f58995ef1880970a1477db961"
   },
   "xpr": {
     "eosio": "cb762c58e4823e73a9d677721929305657e1134f0d34a2f318f7c9ca638eaba8",
     "eosio.token": "bf13acab1b4bc2676ef6f0afcf1765ab5db3ffa1ac18453a628e1e65fe26e045",
     "swap.alcor": "fc7187eb14194bb0d03f5e27dceced144777f5d31226c6c1a9e15edc53aec1a4",
-    "alcor": "849f3ba33362996c1091d9d220d7afba7d2a58a2615437a4c6cdfb54d1cdb1b1"
+    "alcor": "849f3ba33362996c1091d9d220d7afba7d2a58a2615437a4c6cdfb54d1cdb1b1",
+    "book.alcor": "5080488fd7cda1cb6697a704ad742b262eb4be3f58995ef1880970a1477db961"
   },
   "vaulta": {
     "eosio": "dbd704dd1b7df115cf9a4c31eb98dd1336476ea5642445aa00dc8f8bb4910abc",

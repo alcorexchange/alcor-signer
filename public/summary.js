@@ -36,8 +36,13 @@ import { Bytes, Checksum256 } from './vendor/wharfkit.js'
 
 // Risks are collected per leg BEFORE merging: one leg without a minimum is invisible
 // in the summed amounts, and it swaps its share at any price.
-export function summarize(chain, actions) {
-  const legs = actions.filter((action) => !isCpuPayerNoop(chain, action)).map((action) => decode(chain, action))
+//
+// `markets`: order-book markets two nodes agreed on (`readBookMarkets` in sign.js), by id.
+// A missing one shows the order in contract units, with a warning.
+export function summarize(chain, actions, markets = new Map()) {
+  const legs = actions
+    .filter((action) => !isCpuPayerNoop(chain, action))
+    .map((action) => decode(chain, action, markets))
   const folded = foldDeposits(chain, legs)
   const groups = merge(folded)
   const named = folded.some((leg) => !leg.side) ? groups.filter((group) => !group.side) : groups
@@ -157,6 +162,7 @@ const DECODERS = [
   { match: (chain, a) => a.account === 'eosio' && Object.hasOwn(SYSTEM_ACTIONS, a.name), decode: systemAction },
   { match: (chain, a) => Boolean(chain.alcor.spot) && a.account === chain.alcor.spot && SPOT_CANCELS.has(a.name), decode: spotCancel },
   { match: (chain, a) => a.account === chain.alcor.swap && Object.hasOwn(POOL_ACTIONS, a.name), decode: poolAction },
+  { match: (chain, a) => Boolean(chain.alcor.book) && a.account === chain.alcor.book && Object.hasOwn(BOOK_ACTIONS, a.name), decode: bookAction },
   { match: (chain, a) => LIGHT_CLIENT_PROOFS.has(a.name) && Object.hasOwn(chain.bridge?.lightClients ?? {}, a.account), decode: bridgeProof },
   { match: (chain, a) => a.name === 'credit' && Object.hasOwn(chain.bridge?.gateways ?? {}, a.account), decode: bridgeCredit },
   { match: (chain, a) => a.account === chain.bridge?.contract && a.name === 'claim', decode: bridgeClaim },
@@ -165,14 +171,15 @@ const DECODERS = [
   { match: (chain, a) => isTokenOpen(a), decode: tokenOpen },
 ]
 
-function decode(chain, action) {
+function decode(chain, action, markets) {
   const decoder = DECODERS.find((entry) => entry.match(chain, action))
-  return decoder ? decoder.decode(chain, action) : unknown(action)
+  return decoder ? decoder.decode(chain, action, markets) : unknown(action)
 }
 
 function receiverDecoder(chain, to) {
   if (to === chain.alcor.swap) return swap
   if (chain.alcor.spot && to === chain.alcor.spot) return spotOrder
+  if (chain.alcor.book && to === chain.alcor.book) return bookTransfer
   if (to === chain.bridge?.contract) return bridgeWithdraw
   if (to === chain.bridge?.vault) return bridgeDeposit
   return plainTransfer
@@ -707,7 +714,7 @@ function unknown(action) {
   }
 }
 
-function transfer(chain, action) {
+function transfer(chain, action, markets) {
   const data = action.data ?? {}
   const to = String(data.to ?? '')
   const amount = parseAmount(data.quantity, action.account)
@@ -720,7 +727,7 @@ function transfer(chain, action) {
     }
   }
 
-  const leg = receiverDecoder(chain, to)(chain, { from: String(data.from ?? ''), to, amount, memo: String(data.memo ?? '') })
+  const leg = receiverDecoder(chain, to)(chain, { from: String(data.from ?? ''), to, amount, memo: String(data.memo ?? '') }, markets)
   // Both ways: a fake sent is as wrong as a fake that comes back for real money.
   const fakes = [amount, leg.receive].map((token) => fakeNative(chain, token)).filter(Boolean)
   return { ...leg, risks: [...fakes, ...leg.risks] }
@@ -821,15 +828,289 @@ function spotOrder(chain, { to, amount, memo }) {
   return { title, out: { amount, to }, receive, risks }
 }
 
+// ── book.alcor: the order book ────────────────────────────────────────────
+//
+// Orders trade on balances inside the contract: a transfer in is a deposit credited to the
+// sender, `withdraw` takes it out. Sizes are lots and prices are quote units per lot; only
+// the market row (lot, base, quote) turns them into tokens. It comes from the chain,
+// confirmed by a second node (`readBookMarkets` in sign.js); without it the order shows in
+// contract units, with a warning.
+
+const BOOK_SWAP = 'swap#'
+// `swap#<market>#<least out, in units of the token bought>[#<recipient>]`, the sender by default.
+const BOOK_SWAP_MEMO = /^swap#(\d{1,20})#(\d{1,20})(?:#([a-z1-5.]{1,12}))?$/
+
+const BOOK_MARKET_ACTIONS = new Set(['placeorder', 'buyquote', 'cancelall'])
+
+/** Ids of the markets this summary reads, for `readBookMarkets`. */
+export function bookMarketIds(chain, actions) {
+  const book = chain.alcor.book
+  if (!book) return []
+
+  const ids = actions.flatMap((action) => {
+    const data = action.data ?? {}
+    if (action.account === book && BOOK_MARKET_ACTIONS.has(action.name)) return [String(data.market_id)]
+    if (action.name === 'transfer' && String(data.to) === book) {
+      const swap = parseBookSwap(String(data.memo ?? ''))
+      return swap ? [swap.market] : []
+    }
+    return []
+  })
+  return [...new Set(ids)].filter((id) => /^\d{1,20}$/.test(id))
+}
+
+function parseBookSwap(memo) {
+  const match = memo.match(BOOK_SWAP_MEMO)
+  return match ? { market: match[1], least: BigInt(match[2]), recipient: match[3] ?? null } : null
+}
+
+const BUY = 0
+const SELL = 1
+
+const ORDER_FLAGS = {
+  0: 'stays in the book until filled or cancelled',
+  1: 'post-only: rests in the book, never trades on arrival',
+  2: 'what does not fill at once is cancelled',
+  4: 'fills in full at once, or not at all',
+  8: 'post-only: skipped if it would trade on arrival',
+}
+
+const uint = (value) => (/^\d{1,20}$/.test(String(value)) ? BigInt(value) : null)
+const tokenAmount = (token, units) => ({ units, precision: token.precision, symbol: token.symbol, contract: token.contract })
+const sameToken = (a, b) => a.contract === b.contract && a.symbol === b.symbol && a.precision === b.precision
+const joined = (...parts) => parts.filter(Boolean).join(' · ')
+const pair = (market) => `${market.base.symbol}/${market.quote.symbol}`
+
+// Quote per one base token: exact where the lot divides it, marked `≈` where it does not.
+const PRICE_DIGITS = 6
+
+function unitPrice({ base, quote, lot }, perLot) {
+  const scaled = perLot * 10n ** BigInt(base.precision + PRICE_DIGITS)
+  const text = formatAmount({ units: scaled / lot, precision: quote.precision + PRICE_DIGITS, symbol: quote.symbol })
+  return `${scaled % lot === 0n ? '' : '≈ '}${text} per ${base.symbol}`
+}
+
+const feeOf = (market) => (market.feeBps > 0 ? `${market.feeBps / 100}%` : null)
+
+const uncheckedMarket = (chain, id) => ({
+  kind: 'warn',
+  text: `Alcor could not check market #${id} with two ${chain.name} nodes, so the amounts below are in the contract's units. Read every field below.`,
+})
+
+const unreadableOrder = (action) => ({
+  kind: 'warn',
+  text: `Alcor cannot read this ${action}. Read every field below.`,
+})
+
+function placeOrder(chain, data, markets) {
+  const side = Number(data.side)
+  const price = uint(data.price)
+  const qty = uint(data.qty)
+  const id = String(data.market_id)
+  const market = markets.get(id)
+  const verb = side === BUY ? 'Buy' : 'Sell'
+
+  if ((side !== BUY && side !== SELL) || !price || !qty || !Object.hasOwn(ORDER_FLAGS, data.flags)) {
+    return { title: 'Order on Alcor', rows: [], risks: [unreadableOrder('order')] }
+  }
+
+  const expires = Number(data.expires_at) > 0 ? `expires ${utcDate(data.expires_at)}` : null
+  const lasts = joined(ORDER_FLAGS[data.flags], expires)
+
+  if (!market) {
+    return {
+      title: `${verb} order`,
+      rows: [
+        {
+          dir: side === BUY ? 'in' : 'out',
+          label: side === BUY ? 'You buy' : 'You sell',
+          amount: `${groupDigits(String(qty))} lots`,
+          sub: joined(`market #${id}`, `${groupDigits(String(price))} units per lot`, lasts),
+        },
+      ],
+      risks: [uncheckedMarket(chain, id)],
+    }
+  }
+
+  const base = tokenAmount(market.base, qty * market.lot)
+  const quote = tokenAmount(market.quote, qty * price)
+  const fee = feeOf(market)
+  const sized = { amount: formatAmount(base), sub: joined(issuerOf(chain, base), lasts) }
+  const priced = (feeNote) => ({
+    amount: formatAmount(quote),
+    sub: joined(`at ${unitPrice(market, price)}`, fee && feeNote, issuerOf(chain, quote)),
+  })
+  const rows =
+    side === BUY
+      ? [
+          { dir: 'out', label: 'You pay at most', ...priced(`plus up to ${fee} fee`) },
+          { dir: 'in', label: 'You buy', ...sized },
+        ]
+      : [
+          { dir: 'out', label: 'You sell', ...sized },
+          { dir: 'in', label: 'You receive at least', ...priced(`before a fee of up to ${fee}`) },
+        ]
+
+  return { title: `${verb} ${market.base.symbol}`, rows, risks: [] }
+}
+
+// A market buy for an amount: spends up to `quote`, fees included, at no more than `max_price`.
+function buyQuote(chain, data, markets) {
+  const spend = uint(data.quote)
+  const max = uint(data.max_price)
+  const id = String(data.market_id)
+  const market = markets.get(id)
+
+  if (!spend || !max) return { title: 'Order on Alcor', rows: [], risks: [unreadableOrder('order')] }
+
+  if (!market) {
+    return {
+      title: 'Buy order',
+      rows: [
+        {
+          dir: 'out',
+          label: 'You pay at most',
+          amount: `${groupDigits(String(spend))} units`,
+          sub: joined(`market #${id}`, `up to ${groupDigits(String(max))} units per lot`),
+        },
+      ],
+      risks: [uncheckedMarket(chain, id)],
+    }
+  }
+
+  const quote = tokenAmount(market.quote, spend)
+  return {
+    title: `Buy ${market.base.symbol}`,
+    rows: [
+      { dir: 'out', label: 'You pay at most', amount: formatAmount(quote), sub: joined(issuerOf(chain, quote), 'fees included') },
+      {
+        dir: 'in',
+        label: 'You buy',
+        amount: market.base.symbol,
+        sub: joined(issuerOf(chain, market.base), `as much as it buys at up to ${unitPrice(market, max)}`, 'what is unspent stays on Alcor'),
+      },
+    ],
+    risks: [],
+  }
+}
+
+function bookWithdraw(chain, data) {
+  const owner = String(data.owner)
+  const to = String(data.to)
+  const amount = parseAmount(data.quantity, String(data.contract))
+  if (!amount) {
+    return { title: 'Withdraw from Alcor', rows: [], risks: [{ kind: 'warn', text: `Alcor cannot read the amount “${data.quantity}”. Read every field below.` }] }
+  }
+
+  const own = to === owner
+  return {
+    title: 'Withdraw from Alcor',
+    // A step of the order beside it: the transaction is named by the order.
+    side: own,
+    rows: [{ dir: 'in', label: own ? 'You receive' : `${to} receives`, amount: formatAmount(amount), sub: joined(issuerOf(chain, amount), 'from your Alcor balance') }],
+    risks: own ? [] : [{ kind: 'danger', text: `The withdrawal goes to ${to}, not to ${owner}.` }],
+  }
+}
+
+const RETURNS = 'what it holds returns to your Alcor balance'
+
+const BOOK_ACTIONS = {
+  placeorder: placeOrder,
+  buyquote: buyQuote,
+  withdraw: bookWithdraw,
+  // Anyone may cancel an expired order; what it holds goes to its owner either way.
+  cancel: (chain, data) => ({
+    title: 'Cancel order',
+    rows: [{ dir: 'in', label: 'Order', amount: `#${data.order_id}`, sub: RETURNS }],
+    risks: [],
+  }),
+  // An OCO pair goes with it.
+  canceltrig: (chain, data) => ({
+    title: 'Cancel trigger order',
+    rows: [{ dir: 'in', label: 'Trigger order', amount: `#${data.trigger_id}`, sub: RETURNS }],
+    risks: [],
+  }),
+  reduceorder: (chain, data) => ({
+    title: 'Reduce order',
+    rows: [{ dir: 'in', label: 'Order', amount: `#${data.order_id}`, sub: `down to ${data.qty_rem} lots · the rest returns to your Alcor balance` }],
+    risks: [],
+  }),
+  cancelall: (chain, data, markets) => {
+    const id = String(data.market_id)
+    const market = markets.get(id)
+    return {
+      title: 'Cancel orders',
+      rows: [
+        {
+          dir: 'in',
+          label: 'All orders',
+          amount: market ? pair(market) : `market #${id}`,
+          sub: joined(market && `market #${id}`, 'trigger orders too', 'what they hold returns to your Alcor balance'),
+        },
+      ],
+      risks: [],
+    }
+  },
+}
+
+function bookAction(chain, action, markets) {
+  return BOOK_ACTIONS[action.name](chain, action.data ?? {}, markets)
+}
+
+// Any memo but `swap#…` is a deposit: the contract does not read it.
+function bookTransfer(chain, { from, to, amount, memo }, markets) {
+  if (!memo.startsWith(BOOK_SWAP)) {
+    return { title: 'Deposit to Alcor', side: true, out: { amount, to, note: 'to your Alcor balance' }, risks: [] }
+  }
+
+  const swap = parseBookSwap(memo)
+  const title = `Swap via ${to}`
+  if (!swap) {
+    return {
+      title,
+      out: { amount, to },
+      risks: [{ kind: 'warn', text: 'Alcor does not recognise this swap memo — there is no way to check what comes back.' }],
+    }
+  }
+
+  const recipient = swap.recipient ?? from
+  const risks = recipient === from ? [] : [{ kind: 'danger', text: `The proceeds go to ${recipient}, not to ${from}.` }]
+
+  const market = markets.get(swap.market)
+  if (!market) return { title, out: { amount, to }, risks: [...risks, uncheckedMarket(chain, swap.market)] }
+
+  const bought = sameToken(market.base, amount) ? market.quote : sameToken(market.quote, amount) ? market.base : null
+  if (!bought) {
+    return {
+      title,
+      out: { amount, to },
+      risks: [...risks, { kind: 'warn', text: `Market #${swap.market} trades ${pair(market)}, not this ${amount.symbol} — there is no way to check what comes back.` }],
+    }
+  }
+
+  const receive = tokenAmount(bought, swap.least)
+  if (swap.least === 0n) risks.push({ kind: 'danger', text: 'No minimum was set — this swap goes through at any price.' })
+
+  return {
+    title: `Swap ${amount.symbol} → ${receive.symbol}`,
+    key: [BOOK_SWAP, to, from, recipient, tokenKey(amount), tokenKey(receive)].join('|'),
+    out: { amount, to },
+    receive,
+    risks,
+  }
+}
+
+const swapContracts = (chain) => [chain.alcor.swap, chain.alcor.book].filter(Boolean).join(' or ')
+
 // A transfer outside Alcor. An Alcor-grammar memo to a foreign address is a fake swap
 // or order, and the money goes to whoever wrote it.
 function plainTransfer(chain, { to, amount, memo }) {
   const risks = []
 
-  if (memo.startsWith('swapexact')) {
+  if (memo.startsWith('swapexact') || memo.startsWith(BOOK_SWAP)) {
     risks.push({
       kind: 'danger',
-      text: `The memo asks for a swap, but the money goes to ${to} — Alcor swaps through ${chain.alcor.swap}.`,
+      text: `The memo asks for a swap, but the money goes to ${to} — Alcor swaps through ${swapContracts(chain)}.`,
     })
   } else if (parseOrder(memo)) {
     risks.push({
@@ -921,7 +1202,7 @@ function merge(legs) {
  */
 function flowsOf(chain, group) {
   const flows = []
-  const issuer = (amount) => (amount.contract === chain.systemToken.contract ? null : `${amount.contract} token`)
+  const issuer = (amount) => issuerOf(chain, amount)
 
   if (group.out) {
     const { amount, to, note } = group.out
@@ -946,6 +1227,9 @@ function flowsOf(chain, group) {
   // After the send: a bridge withdrawal reads "you send, it arrives at".
   return [...flows, ...(group.rows ?? [])]
 }
+
+// Native token amounts go unmarked: only the contract tells a fake apart.
+const issuerOf = (chain, amount) => (amount.contract === chain.systemToken.contract ? null : `${amount.contract} token`)
 
 function unique(risks) {
   const seen = new Set()
