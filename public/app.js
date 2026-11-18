@@ -273,8 +273,17 @@ async function homeScreen() {
   screen({ body: [accountsSection(passkeys), securitySection(passkeys), techDetails(passkeys)] })
 }
 
-function welcomeScreen({ then = (passkey, root) => newAccountScreen(passkey, root) } = {}) {
+// A site cannot see whether a passkey exists without a prompt, so both answers get one
+// size: a fresh browser must not nudge someone with a key into a second, empty one.
+// `elsewhere: false` — an app request is waiting, and only these two answer it.
+function welcomeScreen({ created = (passkey, root) => newAccountScreen(passkey, root), found = () => homeScreen(), elsewhere = true } = {}) {
   const out = stack([])
+  const findFailed = (error) => out.replaceChildren(failure(error), note('Passkey on your phone? Pick it in the prompt and scan the code.'))
+  const importWithKey = () =>
+    createKeyFlow(out, (passkey, root) => {
+      forgetRoot(root)
+      importScreen(passkey)
+    })
 
   screen({
     body: [
@@ -296,16 +305,15 @@ function welcomeScreen({ then = (passkey, root) => newAccountScreen(passkey, roo
       out,
     ],
     actions: [
-      button(
-        'Create a passkey',
-        () => createKeyFlow(out, then),
-        'primary'
-      ),
+      button('Create a passkey', () => createKeyFlow(out, created), 'primary'),
+      button('I already have a passkey', () => findKeyFlow(out, found, { onFail: findFailed }), 'secondary'),
     ],
-    links: [
-      ['Use another passkey', () => findKeyFlow(out, () => homeScreen())],
-      ['Restore with 24 words', () => restoreScreen()],
-    ],
+    links: elsewhere
+      ? [
+          ['Restore with 24 words', () => restoreScreen()],
+          ['Import with a private key', importWithKey],
+        ]
+      : [],
   })
 }
 
@@ -3590,10 +3598,12 @@ function importRequest({ request, reply }) {
   }
 
   welcomeScreen({
-    then: (passkey, root) => {
+    created: (passkey, root) => {
       forgetRoot(root)
       importScreen(passkey, context)
     },
+    found: (passkey) => importScreen(passkey, context),
+    elsewhere: false,
   })
 }
 

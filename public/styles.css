@@ -1038,6 +1038,18 @@ a.button.primary:hover { background: var(--primary-fill-hover); border-color: tr
 button.primary:active:not(:disabled) { background: var(--primary-fill-active); box-shadow: none; }
 button.primary:disabled { box-shadow: none; }
 
+/* An equal answer beside the primary: same size, quiet fill. */
+button.secondary {
+  padding: 13px 16px;
+  border-color: transparent;
+  background: var(--secondary-bg);
+  font-size: 14px;
+  letter-spacing: -0.005em;
+}
+button.secondary:hover:not(:disabled) { background: var(--secondary-bg-hover); border-color: transparent; }
+button.secondary:active:not(:disabled) { background: var(--secondary-bg-active); }
+button.secondary:focus-visible { outline-offset: -1px; }
+
 /* One size in every state: ready, busy and done swap content, never the height. */
 button.sign {
   display: flex;
