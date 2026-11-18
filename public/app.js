@@ -276,7 +276,7 @@ async function homeScreen() {
 // A site cannot see whether a passkey exists without a prompt, so both answers get one
 // size: a fresh browser must not nudge someone with a key into a second, empty one.
 // `elsewhere: false` — an app request is waiting, and only these two answer it.
-function welcomeScreen({ created = (passkey, root) => newAccountScreen(passkey, root), found = () => homeScreen(), elsewhere = true } = {}) {
+function welcomeScreen({ created = (passkey, root) => newAccountScreen(passkey, root, { firstKey: true }), found = () => homeScreen(), elsewhere = true } = {}) {
   const out = stack([])
   const findFailed = (error) => out.replaceChildren(failure(error), note('Passkey on your phone? Pick it in the prompt and scan the code.'))
   const importWithKey = () =>
@@ -399,8 +399,11 @@ function wordsScreen(root, { title = 'Your recovery phrase', sub, next }) {
 
 // No sponsor creates accounts yet, so the keys are shown and the account is made by hand.
 // The owner index is the first free one: a used index would share a key between accounts.
-function newAccountScreen(passkey, root) {
+// `firstKey` — just made in a browser with no keys: someone who already had accounts
+// gets back to them from here instead of reading this as their accounts gone.
+function newAccountScreen(passkey, root, { firstKey = false } = {}) {
   const rows = stack([status('Picking keys for each network')])
+  const out = stack([])
   forgetOnHome(() => forgetRoot(root))
 
   screen({
@@ -408,7 +411,9 @@ function newAccountScreen(passkey, root) {
       pageTitle('Create your account', 'Create it with these keys — the account shows up here once it exists'),
       rows,
       note('Owner comes from your 24 words, active is your passkey. Nothing else is needed.'),
+      out,
     ],
+    links: firstKey ? [['Already have accounts? Use another passkey', () => findKeyFlow(out, () => homeScreen())]] : [],
     actions: [
       button(
         'Done',
@@ -454,7 +459,7 @@ function accountsSection(passkeys) {
           el('div', { className: 'empty-title', textContent: 'No accounts yet' }),
           el('div', { className: 'empty-text', textContent: 'Your passkey is not on any account yet. Add one.' }),
         ]),
-        addChoices(primary, out),
+        addChoices(primary, out, { otherPasskey: true }),
         out
       )
       return
@@ -1366,7 +1371,8 @@ function addAccountScreen(passkey) {
   })
 }
 
-const addChoices = (passkey, out) =>
+// `otherPasskey` — on an empty list: accounts made under another key are one prompt away.
+const addChoices = (passkey, out, { otherPasskey = false } = {}) =>
   stack(
     [
       choice({
@@ -1389,6 +1395,14 @@ const addChoices = (passkey, out) =>
         sub: 'Keys for a new account on any network',
         onclick: () => createAccountFlow(passkey, out),
       }),
+      otherPasskey
+        ? choice({
+            icon: ICONS.phone,
+            title: 'Use another passkey',
+            sub: 'Already have accounts? They are under a different key',
+            onclick: () => findKeyFlow(out, () => homeScreen()),
+          })
+        : null,
     ],
     { tight: true }
   )
