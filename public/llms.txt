@@ -12,6 +12,7 @@ The site is a static page with no backend, no build step and no third-party code
 - **Bring an existing account.** Import with a private key (the passkey is added to the account; the old key can be removed), or link from another wallet by adding the passkey to the account's permission.
 - **Export.** The owner key of an account derived from the 24 words can be exported as WIF for Anchor or cleos. The passkey itself can't be exported by anything, and Fast sign keys are never exported.
 - **Sign.** An app sends actions, and Alcor Signer shows what the transaction does and signs it.
+- **Prove an account.** An app asks the person to prove they control an account (Sign-In with Antelope): Alcor Signer shows the app's statement and signs a message with the passkey. It is never a transaction and never raw bytes or a digest, so it can't be turned into one.
 
 ## Signing modes
 
@@ -45,11 +46,11 @@ All four share one passkey and one recovery phrase. EVM networks are planned thr
 ## Who can use it
 
 - **Alcor Exchange apps** (`alcor.exchange`, `app.alcor.exchange` and the network subdomains) get everything above, Auto sign included.
-- **Other dApps** connect through the WharfKit wallet plugin `@alcorexchange/wallet-plugin-alcor-signer`. This is early access: Alcor Signer answers only the sites on its list, so a dApp sends the Alcor team its exact origins (production and staging) before it integrates. Requests from any other site are ignored.
+- **Other dApps** connect through the WharfKit wallet plugin `@alcorexchange/wallet-plugin-alcor-signer`. This is early access: Alcor Signer answers only the sites on its list. To get listed, write to the Alcor team in Telegram, [t.me/alcorexchange](https://t.me/alcorexchange), with the exact origins (production and staging, with `https://` and the port). Requests from any other site are ignored: the plugin reports that the window "did not open in time, or does not accept requests from" the site.
 
 A dApp gets the Alcor Signer window and nothing more:
 
-- Sign in to an existing account, and sign transactions. A dApp can't ask the window to create a wallet or open account settings.
+- Sign in to an existing account, sign transactions, and ask for a proof of the account. A dApp can't ask the window to create a wallet or open account settings.
 - Every transaction opens the window and takes a click. No Auto sign, and the dApp can't read or change the signing mode. If the user has turned on Fast, it signs with the button, without Face ID.
 - The sign-in and signing screens say the site is not an Alcor site.
 - No embedding: a dApp can't put Alcor Signer in an iframe.
@@ -76,9 +77,31 @@ const sessionKit = new SessionKit({
 - Browser only. The key is a passkey on the user's device, so there is no Node.js or server-side signing.
 - Safari opens a window only right after a click. When it holds the window back, the plugin shows a button in the WharfKit dialog that opens it.
 
+## Prove an account (Sign-In with Antelope)
+
+From plugin version 0.2.0. Session Kit has no message signing, so it is a method of the plugin:
+
+```ts
+const proof = await session.walletPlugin.proveAccount({
+  chain: session.chain.id,
+  account: String(session.actor),
+  statement: 'Sign in to yourapp',   // up to 300 characters, one line, shown to the person
+  nonce,                              // 16–64 letters and digits, issued by your server
+  expiresAt: '2026-01-31T12:10:00Z',  // UTC to the second, at most an hour ahead
+})
+// { message, signature: 'SIG_WA_…', fields: { domain, uri, account, permission, statement, chainId, nonce, issuedAt, expiresAt } }
+```
+
+The message is CAIP-122 (the fields of Sign-In with Ethereum) with an Antelope account line; the signature covers `sha256("\x19Antelope Signed Message:\n" + byte length + text)`. Alcor Signer sets `domain` and `uri` from the requesting page's origin and `chainId` from its own registry. Only the passkey signs, on a click.
+
+Verify on the server that relies on it: rebuild the text from `fields`, check the domain is yours and the nonce is the one you issued (then burn it), check it has not expired, recover the key and check that it alone satisfies `account@permission` on chain now. [`src/proof.ts`](https://github.com/alcorexchange/alcor-examples/blob/main/src/proof.ts) in alcor-examples does all of it with nothing to deploy; [`contract/msgproof.cpp`](https://github.com/alcorexchange/alcor-examples/blob/main/contract/msgproof.cpp) does it in a contract. A proof says who controls the account; it is not permission to move funds.
+
 ## Links
 
 - [Alcor Signer](https://sign.alcor.exchange): the wallet
 - [Alcor Exchange](https://alcor.exchange): the DEX that uses it
 - [WharfKit plugin on npm](https://www.npmjs.com/package/@alcorexchange/wallet-plugin-alcor-signer)
 - [Plugin source](https://github.com/alcorexchange/wallet-plugin-alcor-signer)
+- [Developer guide](https://docs.alcor.exchange/alcor-signer): integration, proofs, errors, for people and agents
+- [Examples](https://github.com/alcorexchange/alcor-examples): proof verification on a backend and in a contract
+- [Alcor in Telegram](https://t.me/alcorexchange): getting a site listed, questions

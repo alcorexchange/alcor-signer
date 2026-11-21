@@ -1,7 +1,7 @@
 // Alcor Signer: an isolated signing origin. Modes:
 //
 //   opened directly  → accounts, signing levels, import, keys
-//   opened by app    → login, finish, create, enroll, sign, settings, import
+//   opened by app    → login, finish, create, enroll, sign, prove, settings, import
 //   iframe in app    → Auto sign: sign without a screen, or refuse
 //
 // Nothing from the app is imported here, and cannot be: it is another origin.
@@ -101,7 +101,8 @@ import {
   rootFromSecret,
   rootFromWords,
 } from './root.js'
-import { assertWithPrf } from './passkey.js'
+import { assertWithPrf, signDigest } from './passkey.js'
+import { proofDigest, proofFields, proofText } from './message.js'
 import { discoverPasskey } from './discover.js'
 import { PrivateKey } from './vendor/wharfkit.js'
 import {
@@ -3527,6 +3528,97 @@ async function confirmScreen({ request, reply }) {
   }
 }
 
+/**
+ * A signed message proving the person controls an account (`message.js`). Only the passkey
+ * signs it, only on a click: no fast key, no Auto sign. The account's authority is read
+ * first, and a node that does not answer is a refusal: the screen must not name an account
+ * the passkey does not sign for.
+ */
+async function proveScreen({ request, reply }) {
+  const passkey = findPasskey(request.publicKey)
+  const from = appName(request.appOrigin)
+
+  if (!passkey) {
+    refuseRequest(reply, { title: 'Unknown key', text: 'This key was not created here.', error: 'Unknown key' })
+    return
+  }
+
+  let fields
+  try {
+    fields = proofFields(request, chain, Date.now())
+  } catch (error) {
+    refuseRequest(reply, { text: error.message })
+    return
+  }
+
+  const reject = [
+    'Reject',
+    () => {
+      reply({ ok: false, error: 'Rejected by the user', rejected: true })
+      window.close()
+    },
+    'danger',
+  ]
+
+  screen({ body: confirmSkeleton(from), actions: [signButton('Sign', null, 'Checking the account')], links: [reject] })
+  const ticket = screens
+
+  // undefined: no node answered; null: no such permission.
+  const auth = await permissionAuthority(chain, fields.account, fields.permission).catch(() => undefined)
+  if (screens !== ticket) return
+  if (auth === undefined) {
+    refuseRequest(reply, {
+      title: 'Could not check it',
+      text: `${chain.name} did not answer about ${fields.account}@${fields.permission}. Nothing was signed — try again later.`,
+    })
+    return
+  }
+  if (!auth || !signsAlone(auth, passkey.publicKey)) {
+    refuseRequest(reply, {
+      title: 'Not your account',
+      text: `This passkey does not sign for ${fields.account}@${fields.permission} on ${chain.name}.`,
+    })
+    return
+  }
+
+  const text = proofText(fields)
+  const out = stack([])
+
+  const finish = async () => {
+    out.replaceChildren()
+    setBusy(confirm, 'Waiting for your passkey')
+    let signature
+    try {
+      signature = await signDigest(passkey, proofDigest(text))
+    } catch (error) {
+      out.replaceChildren(failure(error))
+      setBusy(confirm, null)
+      return
+    }
+    reply({ ok: true, message: text, signature: String(signature), fields })
+    setDone(confirm, 'Signed — back to the app')
+    setTimeout(() => window.close(), 400)
+  }
+
+  const confirm = signButton('Sign with passkey', finish)
+
+  screen({
+    body: [
+      pageTitle('Prove it’s you', `From ${from}`),
+      partnerNote(request.appOrigin, 'Sign only if you trust it with proof of this account.'),
+      section('message', [card([el('p', { className: 'proof-statement', textContent: fields.statement })])]),
+      section('signing as', [
+        signerRow({ name: fields.account, permission: fields.permission, network: chain, level: null }),
+        card([field('Valid until', clock(new Date(fields.expiresAt)))]),
+      ]),
+      note(`Not a transaction: it moves no funds and changes no keys. ${from} gets the signature.`),
+      disclosure('What exactly gets signed', [el('pre', { className: 'proof-text', textContent: text })]),
+    ],
+    actions: [out, confirm],
+    links: [reject],
+  })
+}
+
 // ─────────────────────────────────────────────── settings from the app
 
 /**
@@ -3779,6 +3871,8 @@ if (isEmbedded()) {
     else if (incoming.request.kind === 'create') createScreen(incoming)
     else if (incoming.request.kind === 'settings') settingsScreen(incoming)
     else if (incoming.request.kind === 'import') importRequest(incoming)
-    else await confirmScreen(incoming)
+    else if (incoming.request.kind === 'prove') await proveScreen(incoming)
+    else if (incoming.request.kind === 'sign') await confirmScreen(incoming)
+    else refuseRequest(incoming.reply, { title: 'Not supported', text: 'This window does not know what the app asked for.' })
   }
 }

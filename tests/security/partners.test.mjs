@@ -7,9 +7,11 @@ import { PARTNER_PROTOCOL, partnerRefusal } from '../../public/protocol.js'
 
 const version = PARTNER_PROTOCOL
 
-test('partner: only sign-in and signatures, in the protocol it names', () => {
+test('partner: only sign-in, signatures and proofs, in the protocol it names', () => {
   assert.equal(partnerRefusal({ version, kind: 'login', chain: 'wax' }), null)
   assert.equal(partnerRefusal({ version, kind: 'sign', chain: 'wax', actions: [] }), null)
+  assert.equal(partnerRefusal({ version, kind: 'prove', chain: 'wax' }), null)
+  assert.match(partnerRefusal({ kind: 'prove' }), /version/)
 
   assert.match(partnerRefusal({ kind: 'sign' }), /version/)
   assert.match(partnerRefusal({ version: version + 1, kind: 'sign' }), /version/)

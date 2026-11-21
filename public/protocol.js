@@ -15,14 +15,14 @@ const WINDOW_ORIGINS = [...ALLOWED_APP_ORIGINS, ...PARTNER_ORIGINS]
 // Alcor's app deploys with the Signer and sends none.
 export const PARTNER_PROTOCOL = 1
 
-/** Why a partner's request is refused, or null. A partner signs in and asks for signatures, nothing else. */
+/** Why a partner's request is refused, or null. A partner signs in, asks for signatures and proofs, nothing else. */
 export function partnerRefusal(request) {
   if (request.version !== PARTNER_PROTOCOL) {
     return 'This site uses a version of the Alcor Signer plugin this window does not speak. The site needs to update it.'
   }
   if (request.kind === 'login' && request.create !== true) return null
-  if (request.kind === 'sign') return null
-  return 'Other sites can only sign in and ask for signatures.'
+  if (request.kind === 'sign' || request.kind === 'prove') return null
+  return 'Other sites can only sign in, ask for signatures and ask to prove an account.'
 }
 
 /**
