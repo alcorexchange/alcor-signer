@@ -26,7 +26,7 @@ export function partnerRefusal(request) {
 }
 
 /**
- * @returns {Promise<{request: object, reply: (result: object) => void}> | null}
+ * @returns {Promise<{request: object, reply: (result: object) => void, progress: (step: object) => void}> | null}
  *   null when the page was opened directly, not by the app.
  */
 export function awaitRequest() {
@@ -65,6 +65,9 @@ export function awaitRequest() {
             origin
           )
         },
+        // Where a sign-up is, so the app can say why one stopped: a closed window sends
+        // no result. Names from fixed lists only (`signupProgress` in app.js).
+        progress: (step) => window.opener?.postMessage({ type: 'vault:progress', reqId: event.data.reqId, ...step }, origin),
       })
     }
 

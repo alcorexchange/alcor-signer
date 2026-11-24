@@ -123,7 +123,7 @@ export async function assertWithPrf(passkey, salts, challenge = crypto.getRandom
   // Never return empty: without PRF there is no root and no fast sign key (ADR-0010 §2).
   if (secrets.length < salts.length) {
     for (const secret of secrets) secret.fill(0)
-    throw new Error('This browser or device cannot derive keys from passkeys. Update the browser or use another device.')
+    throw noPrfError(NO_PRF_DEVICE)
   }
 
   return {
@@ -136,6 +136,22 @@ export async function assertWithPrf(passkey, salts, challenge = crypto.getRandom
 
 export async function derivePrfSecret(passkey, salt) {
   return (await assertWithPrf(passkey, [salt])).secrets[0]
+}
+
+// A passkey without PRF: `explain` gives the title, the message says what to do instead.
+export const NO_PRF = 'NoPrfError'
+const NO_PRF_DEVICE = 'This browser or device cannot derive keys from passkeys. Update the browser or use another device.'
+
+function noPrfError(message) {
+  const error = new Error(message)
+  error.name = NO_PRF
+  return error
+}
+
+// A credential this origin cannot use, dropped from the device's list. Best effort: not
+// every browser has the call, and nothing depends on it.
+export function dropCredential(credentialId) {
+  globalThis.PublicKeyCredential?.signalUnknownCredential?.({ rpId: location.hostname, credentialId })?.catch(() => {})
 }
 
 function assertSupported() {

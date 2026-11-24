@@ -101,7 +101,7 @@ import {
   rootFromSecret,
   rootFromWords,
 } from './root.js'
-import { assertWithPrf, signDigest } from './passkey.js'
+import { NO_PRF, assertWithPrf, dropCredential, signDigest } from './passkey.js'
 import { proofDigest, proofFields, proofText } from './message.js'
 import { discoverPasskey } from './discover.js'
 import { PrivateKey } from './vendor/wharfkit.js'
@@ -184,6 +184,8 @@ addEventListener('keydown', (event) => {
 
 function failure(error) {
   const { title, detail, kind } = explain(error)
+  // Advice, not a node's reason: plain text under the banner, not its mono detail line.
+  if (error?.name === NO_PRF) return stack([errorBox(title, null, kind), note(detail)])
   return errorBox(title, kind === 'info' ? null : detail, kind)
 }
 
@@ -323,37 +325,95 @@ function welcomeScreen({ created = (passkey, root) => newAccountScreen(passkey, 
 // once the account holds something (`backup`); the root is the same whenever it is derived.
 // One passkey prompt at a time: a second click while the first waits would start another
 // prompt and overwrite the first one's status with its error. Released before `then`.
+// `report(step, error?)` — where the flow is, for a sign-up's `progress`; names only.
 let prompting = false
 
-async function createKeyFlow(out, then, { words = true } = {}) {
+// A key made whose second prompt was cancelled: the next create confirms it instead of
+// making another, or every try would leave one more passkey on the device. Dropped once
+// it is cached some other way ("I already have a passkey" finds it too). Public halves only.
+let unconfirmed = null
+
+// Said only right after making a key here: to someone with accounts, "create one again"
+// would read as "your key is gone".
+const MADE_WITHOUT_PRF =
+  'Passkeys on this device cannot make Alcor Signer keys. Create one again and pick another device in the prompt, ' +
+  'such as your phone by scanning the code. Or update this device.'
+
+async function createKeyFlow(out, then, { words = true, report = () => {} } = {}) {
   if (prompting) return
+  if (unconfirmed && findPasskey(unconfirmed.publicKey)) unconfirmed = null
+  if (unconfirmed) return confirmKeyFlow(out, unconfirmed, then, { words, report })
   prompting = true
+  report('create')
   out.replaceChildren(status('Creating the key — confirm with your passkey'))
 
   try {
-    const created = await makePasskey()
-    out.replaceChildren(status(words ? 'One more confirmation — deriving your recovery phrase' : 'One more confirmation — deriving your keys'))
+    unconfirmed = await makePasskey()
+  } catch (error) {
+    report('create', error)
+    out.replaceChildren(failure(error))
+    return
+  } finally {
+    prompting = false
+  }
+  return confirmKeyFlow(out, unconfirmed, then, { words, report })
+}
 
-    const root = await rootFromPasskey(created)
+// The second prompt. One without PRF never works here, so the device is asked to drop it.
+async function confirmKeyFlow(out, created, then, { words, report }) {
+  if (prompting) return
+  prompting = true
+  report('confirm')
+  out.replaceChildren(status(words ? 'One more confirmation — deriving your recovery phrase' : 'One more confirmation — deriving your keys'))
+
+  let root
+  try {
+    root = await rootFromPasskey(created)
+  } catch (error) {
+    report('confirm', error)
+    if (error?.name === NO_PRF) {
+      unconfirmed = null
+      dropCredential(created.credentialId)
+      out.replaceChildren(failure(Object.assign(new Error(MADE_WITHOUT_PRF), { name: NO_PRF })))
+    } else if (error?.name === 'NotAllowedError') {
+      // The key may sit on a phone that is gone: a new one stays one click away.
+      out.replaceChildren(
+        failure(error),
+        note('Your new passkey is made. Press the same button again to confirm it — no second passkey is made.'),
+        el('div', { className: 'action-links' }, [
+          button('Make a new passkey instead', () => {
+            unconfirmed = null
+            out.replaceChildren()
+          }),
+        ])
+      )
+    } else {
+      unconfirmed = null
+      out.replaceChildren(failure(error))
+    }
+    return
+  } finally {
+    prompting = false
+  }
+
+  unconfirmed = null
+  try {
     forgetOnHome(() => forgetRoot(root))
     const passkey = rememberPasskey({ ...created, prf: true })
-
-    prompting = false
     if (words) wordsScreen(root, { next: () => then(passkey, root) })
     else then(passkey, root)
   } catch (error) {
     out.replaceChildren(failure(error))
-  } finally {
-    prompting = false
   }
 }
 
 // `ownerOn` — a sign-up: the next free owner key on that network comes from the same
 // touch, while the root is still here. A node that does not answer gives null, and the
 // owner costs one more touch later.
-async function findKeyFlow(out, then, { onFail = (error) => out.replaceChildren(failure(error)), ownerOn = null } = {}) {
+async function findKeyFlow(out, then, { onFail = (error) => out.replaceChildren(failure(error)), ownerOn = null, report = () => {} } = {}) {
   if (prompting) return
   prompting = true
+  report('find')
   out.replaceChildren(status('Pick your key — confirm with your passkey'))
 
   let root = null
@@ -370,6 +430,7 @@ async function findKeyFlow(out, then, { onFail = (error) => out.replaceChildren(
     prompting = false
     then(rememberPasskey(found.passkey), owner)
   } catch (error) {
+    report('find', error)
     onFail(error)
   } finally {
     prompting = false
@@ -2451,6 +2512,20 @@ function techDetails(passkeys) {
 
 // ─────────────────────────────────────────────── sign in
 
+// What a sign-up tells the app about where it stopped: the step and, when its prompt
+// failed, the WebAuthn error's name, from fixed lists. No keys, no ids, no messages: the
+// app may be compromised.
+const SIGNUP_STEPS = new Set(['signup', 'create', 'confirm', 'find'])
+const WEBAUTHN_ERRORS = new Set(['NotAllowedError', 'InvalidStateError', 'NotSupportedError', 'SecurityError', 'AbortError', NO_PRF])
+
+function signupProgress(progress) {
+  return (step, error) => {
+    if (!SIGNUP_STEPS.has(step)) return
+    const webauthn = error ? (WEBAUTHN_ERRORS.has(error.name) ? error.name : 'other') : undefined
+    progress?.({ step, ...(webauthn ? { webauthn } : {}) })
+  }
+}
+
 function loginScreen(incoming) {
   const { request, reply } = incoming
   const passkeys = loadPasskeys()
@@ -2462,6 +2537,8 @@ function loginScreen(incoming) {
   const again = () => loginScreen(incoming)
   // The app opts in to open the account itself; without it "no account" stays a failure.
   const create = request.create === true
+  // Only a sign-up reports: Alcor's app alone may send `create` (`partnerRefusal`).
+  const report = create ? signupProgress(incoming.progress) : () => {}
 
   const noAccount = (passkey, owner) =>
     create
@@ -2496,34 +2573,70 @@ function loginScreen(incoming) {
               forgetRoot(root)
             }
           },
-          { words: false }
+          { words: false, report }
         )
       : createKeyFlow(out, (passkey, root) => {
           forgetRoot(root)
           added(passkey, null)
         })
   const ownerOn = create ? chain : null
-  const findOther = () => findKeyFlow(out, added, { ownerOn })
+  const findOther = () => findKeyFlow(out, added, { ownerOn, report })
+
+  // A sign-up in a browser with no keys: the person chose "create" in the app, so the
+  // window leads with it. A key synced from elsewhere is one link away; a lookup that
+  // finds nothing — or was cancelled, WebAuthn does not tell them apart — leaves the
+  // screen as it was, and only a real error is shown.
+  if (create && !passkeys.length) {
+    screen({
+      body: [
+        state({
+          icon: ICONS.key,
+          title: `New ${chain.name} account`,
+          tagline: TAGLINE,
+          text: 'Your key is a passkey on this device: Face ID, fingerprint or PIN. No phrase to type.',
+        }),
+        out,
+      ],
+      actions: [button('Create a passkey', createNew, 'primary')],
+      links: [
+        [
+          'I already have a passkey',
+          () =>
+            findKeyFlow(out, added, {
+              ownerOn,
+              report,
+              onFail: (error) =>
+                out.replaceChildren(error?.name === 'NotAllowedError' ? note('No passkey came back. New here? Create one.') : failure(error)),
+            }),
+        ],
+        cancel,
+      ],
+    })
+    report('signup')
+    return
+  }
 
   // No key cached here — usually a new device the passkey synced to, so lead with
   // signing in and offer a new key only if none came back. WebAuthn doesn't tell
   // "not found" from "cancelled" (privacy), so both get both buttons.
   if (!passkeys.length) {
-    const first = (notFound) =>
+    const first = (failed) =>
       screen({
         body: [
           state({
             icon: ICONS.key,
             title: `Sign in to ${from}`,
             tagline: TAGLINE,
-            text: notFound
-              ? 'No Alcor Signer passkey came back. New here? Create one. Cancelled by mistake? Try again.'
-              : 'Your passkey syncs through iCloud Keychain or Google Password Manager — sign in with it.',
+            text: !failed
+              ? 'Your passkey syncs through iCloud Keychain or Google Password Manager — sign in with it.'
+              : failed.name === 'NotAllowedError'
+                ? 'No Alcor Signer passkey came back. New here? Create one. Cancelled by mistake? Try again.'
+                : 'Your passkey did not sign you in.',
           }),
           seen,
           out,
         ],
-        actions: notFound
+        actions: failed
           ? [button('Create a passkey', createNew, 'primary'), button('Try again', lookup)]
           : [button('Sign in with my passkey', lookup, 'primary')],
         links: [cancel],
@@ -2533,12 +2646,12 @@ function loginScreen(incoming) {
       findKeyFlow(out, added, {
         ownerOn,
         onFail: (error) => {
-          first(true)
+          first(error ?? new Error('Unknown error'))
           out.replaceChildren(...(error?.name === 'NotAllowedError' ? [] : [failure(error)]))
         },
       })
 
-    first(false)
+    first(null)
     return
   }
 

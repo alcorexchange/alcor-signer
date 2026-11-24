@@ -46,4 +46,5 @@ const BY_NAME = {
   ram_usage_exceeded: 'The account ran out of RAM.',
   unsatisfied_authorization: 'The signature did not satisfy the account permissions.',
   NotAllowedError: 'Passkey confirmation was cancelled.',
+  NoPrfError: 'Alcor Signer keys cannot be made here',
 }
