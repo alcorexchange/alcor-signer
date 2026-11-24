@@ -4,7 +4,8 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { webcrypto } from 'node:crypto'
 import { Checksum256, Bytes } from '../../public/vendor/wharfkit.js'
-import { makeDeviceKey } from '../../public/device.js'
+import { makeDeviceKey, rootFromSeed } from '../../public/device.js'
+import { rootFromWords } from '../../public/root.js'
 import { signWithSession } from '../../public/session.js'
 import { appFunctions, plain } from './harness.mjs'
 
@@ -16,6 +17,22 @@ test('a browser key cannot be read, only used', async () => {
   assert.equal(made.pair.privateKey.extractable, false)
   await assert.rejects(crypto.subtle.exportKey('pkcs8', made.pair.privateKey))
   await assert.rejects(crypto.subtle.exportKey('jwk', made.pair.privateKey))
+})
+
+test('a browser key’s master key cannot be read, and gives the same 24 words every time', async () => {
+  const made = await makeDeviceKey()
+  assert.equal(made.seed.extractable, false)
+  await assert.rejects(crypto.subtle.exportKey('raw', made.seed))
+
+  const first = await rootFromSeed(made.seed)
+  const again = await rootFromSeed(made.seed)
+  assert.equal(first.words.length, 24)
+  assert.deepEqual(first.words, again.words)
+  // Typed back in, the words build the same root: the owner key they give is the account's.
+  assert.equal(rootFromWords(first.words.join(' ')).master.publicKey.toString(), first.master.publicKey.toString())
+
+  const other = await rootFromSeed((await makeDeviceKey()).seed)
+  assert.notDeepEqual(other.words, first.words)
 })
 
 test('a browser key signs low-S and the signature recovers it', async () => {

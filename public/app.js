@@ -89,7 +89,20 @@ import {
   setAutoSign,
 } from './session.js'
 import { k1PublicKey } from './k1.js'
-import { autoDeviceSigner, findDeviceKey, forgetDeviceKey, keepDeviceKey, loadDeviceKeys, loadDeviceSigner, makeDeviceKey, refreshDeviceKeys, setDeviceAuto } from './device.js'
+import {
+  autoDeviceSigner,
+  deviceRoot,
+  findDeviceKey,
+  forgetDeviceKey,
+  keepDeviceKey,
+  loadDeviceKeys,
+  loadDeviceSigner,
+  makeDeviceKey,
+  refreshDeviceKeys,
+  rootFromSeed,
+  servesNetwork,
+  setDeviceAuto,
+} from './device.js'
 import { isPasskeyOf, passkeyHost } from './webauthn.js'
 import {
   ROOT_SALT,
@@ -547,7 +560,17 @@ function accountsSection(passkeys, devices = []) {
         ]),
         ...(primary
           ? [addChoices(primary, out, { otherPasskey: true })]
-          : [el('div', { className: 'action-links' }, [button('Restore with 24 words', () => restoreScreen())])]),
+          : [
+              // Before the first deposit there is no account row to open: the words are here.
+              el('div', { className: 'action-links' }, [
+                ...devices.flatMap((device, i) => [
+                  i ? el('span', { className: 'sep', textContent: '·' }) : null,
+                  button(devices.length === 1 ? 'Recovery phrase' : `Words of ${device.name}`, () => phraseScreen(device, { back: homeScreen, exportKeys: true })),
+                ]),
+                el('span', { className: 'sep', textContent: '·' }),
+                button('Restore with 24 words', () => restoreScreen()),
+              ]),
+            ]),
         out
       )
       return
@@ -669,7 +692,7 @@ async function accountsOn(network, passkeys) {
 async function deviceAccountsOn(network) {
   const found = await Promise.all(
     loadDeviceKeys()
-      .filter((device) => device.chainId === network.chainId)
+      .filter((device) => servesNetwork(device, network.chainId))
       .map(async (device) =>
         (await accountsForKey(network, device.publicKey)).map((account) => ({ ...account, chain: network, passkey: null, device }))
       )
@@ -680,7 +703,7 @@ async function deviceAccountsOn(network) {
 
 // Every browser key's accounts, each on its own network; a network that did not answer goes in `failed`.
 async function deviceAccounts(failed) {
-  const networks = Object.values(CHAINS).filter((network) => loadDeviceKeys().some((device) => device.chainId === network.chainId))
+  const networks = Object.values(CHAINS).filter((network) => loadDeviceKeys().some((device) => servesNetwork(device, network.chainId)))
   const found = await Promise.all(
     networks.map((network) =>
       deviceAccountsOn(network).catch(() => {
@@ -976,7 +999,14 @@ function devicePanel(entry, { onState }) {
         busyText ? el('span', { className: 'spinner' }) : null,
         el('span', { textContent: busyText ?? `${LEVEL_TEXT[level]}. The key lives in this browser only: your 24 words bring it back.` }),
       ]),
-      ...(busyText ? [] : [el('div', { className: 'level-actions' }, [inlineAction('Move to a passkey', ICONS.key, () => restoreScreen())])])
+      ...(busyText
+        ? []
+        : [
+            el('div', { className: 'level-actions' }, [
+              inlineAction('Recovery phrase', ICONS.download, () => phraseScreen(entry.device, { back: homeScreen, exportKeys: true })),
+              inlineAction('Move to a passkey', ICONS.key, () => restoreScreen()),
+            ]),
+          ])
     )
   }
 
@@ -988,7 +1018,7 @@ function devicePanel(entry, { onState }) {
     }
     render('Saving')
     try {
-      await setDeviceAuto(entry.device.publicKey, entry.name, next === 'auto')
+      await setDeviceAuto(entry.device.publicKey, entry.chain.chainId, entry.name, next === 'auto')
       level = next
       rememberValue('levels', id, level)
       markPicked(entry.chain.chainId, entry.name)
@@ -1000,7 +1030,7 @@ function devicePanel(entry, { onState }) {
   }
 
   render()
-  loadDeviceSigner(entry.device.publicKey, entry.name).then(
+  loadDeviceSigner(entry.device.publicKey, entry.chain.chainId, entry.name).then(
     (signer) => {
       if (!signer) return box.replaceChildren(banner('danger', 'The key is no longer in this browser. Bring the account back with your 24 words.'))
       level = signer.auto ? 'auto' : 'fast'
@@ -1631,9 +1661,12 @@ function linkGuideScreen(passkey) {
 // `confirm` — the app asked for a backup: Done waits for "I saved these words".
 // `exportKeys` — a key next to each account the words bring back. Not in the backup the app asks for:
 // that one is about saving the words.
+// `passkey` — or a browser key (`device.js`, it carries `chainIds`): its words come from
+// its master key in this browser, with no prompt, still only on a click.
 function phraseScreen(passkey, { back = homeScreen, done: finish = back, confirm = false, links = [], exportKeys = false } = {}) {
   const out = stack([])
   const step = stack([])
+  const browserKey = Array.isArray(passkey.chainIds)
 
   // The root on screen, if any: every way out zeroes it, not only Done.
   let shown = null
@@ -1644,7 +1677,12 @@ function phraseScreen(passkey, { back = homeScreen, done: finish = back, confirm
   const exits = links.filter(Boolean).map(([label, go]) => [label, () => (forgetShown(), go())])
 
   const draw = (actions, back) =>
-    screen({ body: [pageTitle('Recovery phrase', `The way back in if you lose ${passkeyLabel(passkey)}`), step, out], actions, links: exits, back })
+    screen({
+      body: [pageTitle('Recovery phrase', browserKey ? 'The way back in if this browser is cleared' : `The way back in if you lose ${passkeyLabel(passkey)}`), step, out],
+      actions,
+      links: exits,
+      back,
+    })
 
   const done = () => {
     const go = button(
@@ -1660,11 +1698,11 @@ function phraseScreen(passkey, { back = homeScreen, done: finish = back, confirm
   }
 
   async function reveal() {
-    out.replaceChildren(status(`Waiting for ${passkeyLabel(passkey)}`))
+    out.replaceChildren(status(browserKey ? 'Deriving the words' : `Waiting for ${passkeyLabel(passkey)}`))
 
     const coverage = stack([status('Checking which accounts these words bring back')])
     try {
-      const root = await rootFromPasskey(passkey)
+      const root = await (browserKey ? deviceRoot(passkey.publicKey) : rootFromPasskey(passkey))
       shown = root
       forgetOnHome(forgetShown)
       out.replaceChildren()
@@ -1686,12 +1724,19 @@ function phraseScreen(passkey, { back = homeScreen, done: finish = back, confirm
   }
 
   step.replaceChildren(
-    card([
-      tile({ icon: ICONS.eye, title: 'Derived, never stored', sub: 'Your passkey computes them on the spot. The same words every time' }),
-      tile({ icon: ICONS.key, tone: 'mint', title: 'One phrase for this passkey', sub: 'Every account of it, on every network' }),
-    ])
+    card(
+      browserKey
+        ? [
+            tile({ icon: ICONS.eye, title: 'Derived, never stored', sub: 'This browser’s key computes them on the spot. The same words every time' }),
+            tile({ icon: ICONS.key, tone: 'mint', title: 'One phrase for this key', sub: 'Every account of it, on every network' }),
+          ]
+        : [
+            tile({ icon: ICONS.eye, title: 'Derived, never stored', sub: 'Your passkey computes them on the spot. The same words every time' }),
+            tile({ icon: ICONS.key, tone: 'mint', title: 'One phrase for this passkey', sub: 'Every account of it, on every network' }),
+          ]
+    )
   )
-  draw([button('Show with passkey', reveal, 'primary')], () => back())
+  draw([button(browserKey ? 'Show the words' : 'Show with passkey', reveal, 'primary')], () => back())
 }
 
 async function coverageSection(passkey, root, out, { exportKeys = false } = {}) {
@@ -2273,13 +2318,21 @@ function restoreScreen() {
 
       // A browser that cannot make passkeys, or a person who would rather not. As with a new
       // passkey, the owner moves to NEW words: the old ones may come from a stolen passkey,
-      // which derives them again. The new words are shown before anything is kept or sent;
-      // then one browser key per network is kept, before the move — a move that lands must
-      // find its key here. A fresh root owns nothing, so its owner slots are 0, 1, …
-      const toBrowser = (list) => {
-        const newRoot = rootFromSecret(crypto.getRandomValues(new Uint8Array(32)))
+      // which derives them again. One browser key for every network moved, its words from
+      // its master key — one phrase, as for a passkey — shown before anything is kept or
+      // sent. Then the key is kept, before the move: a move that lands must find its key here.
+      // A fresh root owns nothing, so its owner slots are 0, 1, …
+      const toBrowser = async (list) => {
+        let made, newRoot
+        try {
+          made = await makeDeviceKey()
+          newRoot = await rootFromSeed(made.seed)
+        } catch (error) {
+          out.replaceChildren(failure(error))
+          return
+        }
         forgetOnHome(() => forgetRoot(newRoot))
-        const keys = new Map()
+        let kept = null
 
         const run = (pending) =>
           attempt({
@@ -2291,20 +2344,18 @@ function restoreScreen() {
               homeScreen()
             },
             run: async () => {
-              for (const entry of pending) {
-                const on = entry.chain
-                if (keys.has(on.chainId)) continue
-                // A few spare slots: the move asks the chain for the first free one, and these are all ours anyway.
-                const count = list.filter((other) => other.chain.chainId === on.chainId).length + 5
-                const owners = Array.from({ length: count }, (_, index) => ownerPublicKey(newRoot, on, index))
-                keys.set(on.chainId, await keepDeviceKey(await makeDeviceKey(), { chainId: on.chainId, owner: owners[0], owners }))
+              if (!kept) {
+                const chainIds = unique(list.map((entry) => entry.chain.chainId))
+                // A few spare slots per network: the move asks the chain for the first free one, and these are all ours anyway.
+                const owners = chainIds.flatMap((chainId) => {
+                  const on = list.find((entry) => entry.chain.chainId === chainId).chain
+                  const count = list.filter((entry) => entry.chain.chainId === chainId).length + 5
+                  return Array.from({ length: count }, (_, index) => ownerPublicKey(newRoot, on, index))
+                })
+                kept = await keepDeviceKey(made, { chainIds, owner: owners[0], owners })
               }
-              const results = []
-              for (const [chainId, key] of keys) {
-                const group = pending.filter((entry) => entry.chain.chainId === chainId)
-                if (group.length) results.push(...(await moveAll(group, { newPasskey: key, newRoot, lost: true })))
-              }
-              await forgetMovedDeviceKeys(results, new Set([...keys.values()].map((key) => key.publicKey)))
+              const results = await moveAll(pending, { newPasskey: kept, newRoot, lost: true })
+              await forgetMovedDeviceKeys(results, new Set([kept.publicKey]))
               const left = results.filter((result) => result.error).map((result) => result.entry)
               if (!left.length) {
                 forgetOld()
@@ -2328,8 +2379,8 @@ function restoreScreen() {
           title: 'Your new 24 words',
           sub: 'The old ones stop working once the move lands',
           facts: [
-            'The key lives in this browser only. Clearing it, or losing this device, deletes the key.',
-            'These words bring the accounts back in any browser. Alcor keeps no copy and cannot show them again.',
+            'The key lives in this browser only. Clearing it, or losing this device, deletes the key — and these words bring it back in any browser.',
+            'Alcor keeps no copy. This browser’s key can show them again at any time, from the Signer.',
           ],
           next: () => run(list),
         })
@@ -2724,8 +2775,9 @@ function techDetails(passkeys) {
 // ─────────────────────────────────────────────── sign in
 
 // A sign-up without a passkey (README «Аккаунт без passkey»): a key that lives in this
-// browser alone, and the owner from 24 random words shown now — nothing can show them
-// again. Nothing is kept until "I saved these words": a window closed on them leaves no key.
+// browser alone, and the owner from the 24 words of its master key (`rootFromSeed`), shown
+// now and again whenever asked, as a passkey's are. Nothing is kept until "I saved these
+// words": a window closed on them leaves no key.
 function deviceKeyScreen({ reply, report, cancel, back = null, unsupported = false }) {
   const out = stack([])
   report('device')
@@ -2736,21 +2788,21 @@ function deviceKeyScreen({ reply, report, cancel, back = null, unsupported = fal
       // A browser that keeps no keys says so now, not after the words are written down.
       await refreshDeviceKeys()
       const made = await makeDeviceKey()
-      root = rootFromSecret(crypto.getRandomValues(new Uint8Array(32)))
+      root = await rootFromSeed(made.seed)
       forgetOnHome(() => forgetRoot(root))
       const owner = ownerPublicKey(root, chain, 0)
 
       report('words')
       wordsScreen(root, {
         title: 'Your 24 words',
-        sub: 'The only way back to this account',
+        sub: 'The way back if this browser is cleared',
         facts: [
-          'The key lives in this browser only. Clearing it, or losing this device, deletes the key.',
-          'These words bring the account back in any browser. Alcor keeps no copy and cannot show them again.',
+          'The key lives in this browser only. Clearing it, or losing this device, deletes the key — and the words bring it back in any browser.',
+          'Alcor keeps no copy. This browser’s key can show them again at any time, from the Signer.',
         ],
         next: async (done) => {
           try {
-            const kept = await keepDeviceKey(made, { chainId: chain.chainId, owner })
+            const kept = await keepDeviceKey(made, { chainIds: [chain.chainId], owner })
             forgetRoot(root)
             // Best effort: asks the browser not to clear the key under storage pressure.
             navigator.storage?.persist?.().catch(() => {})
@@ -2876,7 +2928,7 @@ function loginScreen(incoming) {
   // finds nothing — or was cancelled, WebAuthn does not tell them apart — leaves the
   // screen as it was, and only a real error is shown.
   // A browser key belongs to one network: others' keys mean nothing here.
-  const deviceKeys = loadDeviceKeys().filter((device) => device.chainId === chain.chainId)
+  const deviceKeys = loadDeviceKeys().filter((device) => servesNetwork(device, chain.chainId))
   const browserKey = (back) => deviceKeyScreen({ reply, report, cancel, back })
 
   if (create && !passkeys.length && !deviceKeys.length && !canMakePasskeys()) {
@@ -3361,22 +3413,8 @@ function createScreen({ request, reply }) {
 // account opened by its first deposit skips them at creation. Nothing is signed; the
 // reply says only that the person ticked "saved", never the words.
 function backupScreen({ request, reply }) {
-  const passkey = findPasskey(String(request.publicKey ?? ''))
-  // A browser key's words were shown, and ticked as saved, before its key was kept.
-  if (!passkey && findDeviceKey(String(request.publicKey ?? ''))) {
-    screen({
-      body: [
-        state({
-          icon: ICONS.download,
-          title: 'Your 24 words',
-          text: 'They were shown when this browser’s key was made, and you marked them saved. Alcor keeps no copy, so they cannot be shown again.',
-        }),
-      ],
-      actions: [button('Done', () => replyAndClose(reply, stack([]), { ok: true }), 'primary')],
-      links: [cancelLink(reply)],
-    })
-    return
-  }
+  // A browser key's words come from its master key, as a passkey's do from PRF.
+  const passkey = findPasskey(String(request.publicKey ?? '')) ?? findDeviceKey(String(request.publicKey ?? ''))
   if (!passkey) {
     refuseRequest(reply, { text: 'The passkey for this account is not on this device.' })
     return
@@ -3418,7 +3456,7 @@ function finishScreen({ request, reply }) {
   const name = String(request.account ?? '')
   const owner = String(request.owner ?? '')
   const passkey = findPasskey(String(request.publicKey ?? ''))
-  // A browser key has no passkey to unlock the owner key: the 24 words do, typed here.
+  // A browser key unlocks the owner key with its master key: no prompt, the click on Finish.
   const device = passkey ? null : findDeviceKey(String(request.publicKey ?? ''))
   const key = passkey ?? device
   const cancel = cancelLink(reply)
@@ -3433,15 +3471,10 @@ function finishScreen({ request, reply }) {
     return
   }
 
-  const words = device ? secretInput({ placeholder: '24 words, separated by spaces', multiline: true }) : null
   const ownerRoot = async (work) => {
-    if (!device) {
-      work.replaceChildren(status('Confirm with your passkey — it unlocks the owner key'))
-      return rootFromPasskey(passkey)
-    }
-    const typed = words.value
-    words.value = ''
-    return rootFromWords(typed)
+    if (device) return deviceRoot(device.publicKey)
+    work.replaceChildren(status('Confirm with your passkey — it unlocks the owner key'))
+    return rootFromPasskey(passkey)
   }
 
   const putKeyOnActive = async (work, active) => {
@@ -3450,7 +3483,7 @@ function finishScreen({ request, reply }) {
 
     try {
       ownerKey = ownerKeyOf(root, chain, owner)
-      if (!ownerKey) throw new Error(`${shortKey(owner)} is not from ${device ? 'these' : 'this passkey’s'} 24 words`)
+      if (!ownerKey) throw new Error(`${shortKey(owner)} is not from ${device ? 'this browser key’s' : 'this passkey’s'} 24 words`)
 
       work.replaceChildren(status(device ? 'Putting this browser’s key on active' : 'Putting your passkey on active'))
       const action = editKeysAction(name, 'active', active, { add: [key.publicKey], remove: [owner], by: 'owner' })
@@ -3498,7 +3531,7 @@ function finishScreen({ request, reply }) {
         icon: ICONS.user,
         title: `Finish ${name}`,
         text: device
-          ? `${name} was opened with your owner key alone. Your 24 words unlock it once to put this browser’s key on active; the owner key stays on owner, and ${from} signs you in.`
+          ? `${name} was opened with your owner key alone. Finish puts this browser’s key on active, the owner key stays on owner, and ${from} signs you in.`
           : `${name} was opened with your owner key alone. One passkey confirmation puts your passkey on active, the owner key stays on owner, and ${from} signs you in.`,
       }),
       card([
@@ -3506,7 +3539,6 @@ function finishScreen({ request, reply }) {
         field('adds to active', mono(key.publicKey)),
         field('removes from active', mono(owner)),
       ]),
-      ...(device ? [banner('warn', `Type the words only here, on ${location.host}. Alcor never asks for them anywhere else.`), words] : []),
     ],
     actions: [button('Finish', finish, 'primary')],
     links: [cancel],
@@ -3698,7 +3730,7 @@ async function signingOptions(passkey, signers, auth) {
 
 // A browser key's mode for the app's label: Fast, or Auto where it is on for this account.
 async function deviceLevel(entry) {
-  const signer = await loadDeviceSigner(entry.device.publicKey, entry.name)
+  const signer = await loadDeviceSigner(entry.device.publicKey, entry.chain.chainId, entry.name)
   return signer?.auto ? 'auto' : 'fast'
 }
 
@@ -3710,7 +3742,7 @@ async function deviceOptions(device, signers, auth) {
   if (!signsAlone(auth, device.publicKey)) {
     return { session: null, choosable: false, why: `This browser’s key does not sign for ${signers[0].actor}@${signers[0].permission} on ${chain.name}.` }
   }
-  const session = await loadDeviceSigner(device.publicKey, signers[0].actor)
+  const session = await loadDeviceSigner(device.publicKey, chain.chainId, signers[0].actor)
   if (!session) return { session: null, choosable: false, why: 'The key is no longer in this browser. Bring the account back with your 24 words.' }
   return { session, choosable: true }
 }
@@ -3948,7 +3980,7 @@ async function confirmScreen({ request, reply }) {
       return afterwards(
         'Saving',
         async () => {
-          if (device) await setDeviceAuto(device.publicKey, signer.actor, next === 'auto')
+          if (device) await setDeviceAuto(device.publicKey, chain.chainId, signer.actor, next === 'auto')
           else await setAutoSign(scopeOfEntry(entry), next === 'auto')
           remember(next)
         },
@@ -4181,19 +4213,17 @@ function settingsScreen({ request, reply }) {
             pageTitle('Your account', `From ${appName(request.appOrigin)}`),
             signerRow({ name: entry.name, permission: entry.permission, network: chain, level: null }),
             (entry.device ? devicePanel : signingPanel)(entry, { onState: (next) => (level = next) }),
-            entry.device
-              ? note('Your 24 words were shown when this key was made. Alcor keeps no copy: they cannot be shown again.')
-              : section('security', [
-                  options([
-                    tile({
-                      icon: ICONS.download,
-                      title: 'Recovery phrase',
-                      sub: 'The way back in if you lose this passkey',
-                      aside: icon(ICONS.chevron, 14),
-                      onclick: () => phraseScreen(entry.passkey, { back: draw, exportKeys: true }),
-                    }),
-                  ]),
-                ]),
+            section('security', [
+              options([
+                tile({
+                  icon: ICONS.download,
+                  title: 'Recovery phrase',
+                  sub: entry.device ? 'The way back in if this browser is cleared' : 'The way back in if you lose this passkey',
+                  aside: icon(ICONS.chevron, 14),
+                  onclick: () => phraseScreen(entry.passkey ?? entry.device, { back: draw, exportKeys: true }),
+                }),
+              ]),
+            ]),
           ],
           actions: [button('Done', close, 'primary')],
           back: goHome,
@@ -4310,8 +4340,8 @@ async function embeddedLevel(request) {
 // The browser key that signs alone for this account, if any: the chain says which. One
 // node, as for fast sign keys (`keySatisfies`); the built transaction is checked again.
 async function deviceSignerFor(on, level) {
-  for (const entry of loadDeviceKeys().filter((key) => key.chainId === on.chainId)) {
-    if (await keySatisfies(on, entry.publicKey, level)) return loadDeviceSigner(entry.publicKey, level.actor)
+  for (const entry of loadDeviceKeys().filter((key) => servesNetwork(key, on.chainId))) {
+    if (await keySatisfies(on, entry.publicKey, level)) return loadDeviceSigner(entry.publicKey, on.chainId, level.actor)
   }
   return null
 }

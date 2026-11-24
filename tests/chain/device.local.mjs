@@ -14,8 +14,8 @@ globalThis.crypto ??= webcrypto
 const { Bytes, KeyType, PrivateKey, Serializer, Transaction } = await import('../../public/vendor/wharfkit.js')
 const { k1PublicKey, signK1 } = await import('../../public/k1.js')
 const { CHAINS } = await import('../../public/chain.js')
-const { makeDeviceKey } = await import('../../public/device.js')
-const { ownerKeyOf, ownerPublicKey, rootFromSecret, rootFromWords } = await import('../../public/root.js')
+const { makeDeviceKey, rootFromSeed } = await import('../../public/device.js')
+const { ownerKeyOf, ownerPublicKey, rootFromWords } = await import('../../public/root.js')
 const { editKeysAction, signTransactionWithSession } = await import('../../public/sign.js')
 
 const eosioKey = new PrivateKey(KeyType.K1, Bytes.from(new Uint8Array(32).fill(1)))
@@ -37,11 +37,11 @@ const hello = (actor) => ({ account: 'carol', name: `hello${'abcde'[calls++ % 5]
 before(async () => {
   local = await startChain({ eosioKey, port: 18889, p2p: 19877, name: 'device' })
 
-  // The sign-up, as `deviceKeyScreen` does it.
-  const root = rootFromSecret(crypto.getRandomValues(new Uint8Array(32)))
+  // The sign-up, as `deviceKeyScreen` does it: the words from the key's master key.
+  browserKey = await makeDeviceKey()
+  const root = await rootFromSeed(browserKey.seed)
   words = root.words.join(' ')
   owner = ownerPublicKey(root, network, 0)
-  browserKey = await makeDeviceKey()
 
   await local.newAccount('carol', authority(1, [[k1PublicKey(eosioKey), 1]]))
   await local.newAccount('dave', authority(1, [[owner, 1]]), authority(1, [[browserKey.publicKey, 1]]))
@@ -74,7 +74,7 @@ test('the browser key never signs a permission change', async () => {
 })
 
 test('the 24 words sign the account over to a new browser key', async () => {
-  // A cleared browser: the words, typed again, derive the same owner key.
+  // A cleared browser: the words, typed again, derive the same owner key the master key gave.
   const root = rootFromWords(words)
   const ownerKey = ownerKeyOf(root, network, owner)
   assert.ok(ownerKey, 'the words give back the owner key')
