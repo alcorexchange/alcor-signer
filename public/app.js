@@ -2775,7 +2775,8 @@ function deviceKeyScreen({ reply, report, cancel, back = null, unsupported = fal
         text: 'No passkey needed. Your account opens with a key kept right here, and 24 words to bring it back.',
       }),
       options([
-        tile({ icon: ICONS.shield, tone: 'mint', title: 'Only here', sub: `Lives in this browser on this device. Only ${location.host} can use it` }),
+        // True as written: the key is non-extractable, never sent anywhere, and bound to this origin.
+        tile({ icon: ICONS.shield, tone: 'mint', title: 'Only you hold it', sub: 'Kept in this browser on this device. Alcor never sees it, and no website can read it' }),
         tile({ icon: ICONS.check, title: 'A click to sign', sub: 'No Face ID: you confirm each signature in this window' }),
         tile({ icon: ICONS.download, title: '24 words bring it back', sub: 'Clearing this browser deletes the key. The words are the only way back' }),
       ]),
