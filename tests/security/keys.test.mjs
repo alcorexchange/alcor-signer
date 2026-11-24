@@ -21,6 +21,7 @@ const THIEF = k1(5)
 const OUR_PASSKEY = k1(6) // stands for a WA key of our rpid
 const WEBAUTH = k1(7) // stands for a WA key of another site
 const NEW_PASSKEY = k1(8)
+const OUR_BROWSER_KEY = r1(9) // a browser key of an account with no passkey (`device.js`)
 
 const auth = (parent, keys, links = []) => ({
   parent, threshold: 1, keys: keys.map((key) => ({ key, weight: 1 })), accounts: [], waits: [], links,
@@ -37,6 +38,7 @@ const permissions = [
 const shared = {
   BASE_PERMISSIONS: new Set(['owner', 'active']),
   isBrowserKey: (key) => key.startsWith('PUB_R1_'),
+  isFastKey: (key) => key.startsWith('PUB_R1_') && key !== OUR_BROWSER_KEY,
   isOurPasskey: (key) => key === OUR_PASSKEY,
   keysOn: (a) => a?.keys.map((entry) => entry.key) ?? [],
   unique: (keys) => [...new Set(keys.filter(Boolean))],
@@ -177,6 +179,13 @@ test('Fast sign off leaves another wallet’s R1 key and says so', async () => {
   await assert.rejects(run(), /not made by this passkey/)
   assert.deepEqual(plain(calls.removed).sort(), [OUR_PASSKEY, DEVICE].sort())
   assert.deepEqual(plain(calls.remembered), [DEVICE])
+})
+
+test('Fast sign off never counts this browser’s own key as a stray', async () => {
+  const { run, calls } = disabler({ onChain: [OUR_PASSKEY, FAST, OUR_BROWSER_KEY], ours: [{ n: 3, publicKey: FAST }] })
+  await run()
+  assert.deepEqual(plain(calls.removed), [OUR_PASSKEY, OUR_BROWSER_KEY].sort((a, b) => (a === OUR_PASSKEY ? -1 : 1)))
+  assert.deepEqual(plain(calls.remembered ?? []), [])
 })
 
 test('Fast sign off with no R1 key on chain asks no touch and sends nothing', async () => {

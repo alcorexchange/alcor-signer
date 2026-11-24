@@ -15,6 +15,7 @@
 
 import { Bytes, KeyType, PublicKey, Signature, p256 } from './vendor/wharfkit.js'
 import { derivePrfSecret } from './passkey.js'
+import { openDatabase, transaction } from './idb.js'
 
 const DB = 'alcor-vault'
 const STORE = 'hot-keys'
@@ -26,45 +27,14 @@ export const HOT_KEY_SLOTS = 256
 // P-256 order: Antelope rejects s above half of it.
 const CURVE_ORDER = 0xffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551n
 
-function open() {
-  return new Promise((resolve, reject) => {
-    // v3: PRF-derived fast sign keys. Older stores are dropped, there's nothing to migrate.
-    const request = indexedDB.open(DB, 3)
-    request.onupgradeneeded = () => {
-      const db = request.result
-      for (const name of [...db.objectStoreNames]) if (name !== STORE) db.deleteObjectStore(name)
-      if (!db.objectStoreNames.contains(STORE)) db.createObjectStore(STORE)
-    }
-    request.onsuccess = () => {
-      const db = request.result
-      // Another tab opening a newer version must not wait on this one.
-      db.onversionchange = () => db.close()
-      resolve(db)
-    }
-    request.onerror = () => reject(request.error)
-    request.onblocked = () => reject(new Error('Another Alcor Signer tab is holding the key store — close it and try again.'))
+// v3: PRF-derived fast sign keys. Older stores are dropped, there's nothing to migrate.
+const open = () =>
+  openDatabase(DB, 3, (db) => {
+    for (const name of [...db.objectStoreNames]) if (name !== STORE) db.deleteObjectStore(name)
+    if (!db.objectStoreNames.contains(STORE)) db.createObjectStore(STORE)
   })
-}
 
-// Resolves with the request's result once the transaction commits: a request's success
-// is not a commit, and a key reported saved must be saved.
-function tx(mode, run) {
-  return open().then(
-    (db) =>
-      new Promise((resolve, reject) => {
-        const transaction = db.transaction(STORE, mode)
-        const request = run(transaction.objectStore(STORE))
-        transaction.oncomplete = () => {
-          db.close()
-          resolve(request.result)
-        }
-        transaction.onabort = () => {
-          db.close()
-          reject(transaction.error ?? request.error ?? new Error('The browser did not save the key store'))
-        }
-      })
-  )
-}
+const tx = (mode, run) => transaction(open, STORE, mode, run)
 
 // Read and write in one transaction, so another tab's write in between isn't lost.
 // `change` gets the record (or undefined) and returns the new one, or null to leave it.
@@ -214,15 +184,17 @@ async function scalarAt(secret, n) {
 
 const publicKeyOf = (compressed) => String(new PublicKey(KeyType.R1, Bytes.from(compressed)))
 
-async function describeKey({ scope, n, pair, auto }) {
+// `PUB_R1_` of a WebCrypto pair: Antelope stores the point compressed, Y parity prefix plus X.
+export async function pairPublicKey(pair) {
   const raw = new Uint8Array(await crypto.subtle.exportKey('raw', pair.publicKey))
-
-  // Antelope stores the point compressed: Y parity prefix plus X.
   const compressed = new Uint8Array(33)
   compressed[0] = raw[64] & 1 ? 3 : 2
   compressed.set(raw.slice(1, 33), 1)
+  return publicKeyOf(compressed)
+}
 
-  return { scope, n, pair, auto: auto === true, publicKey: publicKeyOf(compressed) }
+async function describeKey({ scope, n, pair, auto }) {
+  return { scope, n, pair, auto: auto === true, publicKey: await pairPublicKey(pair) }
 }
 
 const toBase64Url = (bytes) =>
