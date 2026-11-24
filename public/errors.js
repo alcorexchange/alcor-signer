@@ -45,6 +45,6 @@ const BY_NAME = {
   tx_net_usage_exceeded: 'The account ran out of NET bandwidth. Stake more or wait for it to refill.',
   ram_usage_exceeded: 'The account ran out of RAM.',
   unsatisfied_authorization: 'The signature did not satisfy the account permissions.',
-  NotAllowedError: 'Passkey confirmation was cancelled.',
+  NotAllowedError: 'The passkey prompt was closed or timed out.',
   NoPrfError: 'Alcor Signer keys cannot be made here',
 }

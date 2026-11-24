@@ -20,6 +20,7 @@ function fakes(overrides = {}) {
     el: (tag, props, children) => ({ el: props.className, children }),
     status: (text) => ({ status: text }),
     note: (text) => ({ note: text }),
+    banner: (kind, text) => ({ banner: kind, text }),
     failure: (error) => ({ failure: error.name }),
     button: (label, onclick) => ({ button: label, onclick }),
     forgetOnHome: () => {},
@@ -40,7 +41,7 @@ function fakes(overrides = {}) {
     dropCredential: (id) => calls.dropped.push(id),
     ...overrides(calls),
   }
-  const flows = appFunctions(['createKeyFlow', 'confirmKeyFlow'], dependencies)
+  const flows = appFunctions(['createKeyFlow', 'confirmKeyFlow', 'forgetUnconfirmed'], dependencies)
   const report = (step, error) => calls.reported.push(error ? `${step}:${error.name}` : step)
   const then = (passkey) => calls.then.push(passkey.publicKey)
   return { flows, calls, shown, out, report, then, dependencies, last: () => shown.at(-1) }
@@ -89,7 +90,7 @@ test('sign-up: after a cancelled second prompt the same button confirms that key
 
   assert.deepEqual(calls.remembered, [])
   assert.deepEqual(calls.dropped, [])
-  assert.match(last().find((node) => node.note).note, /Confirm it once more/)
+  assert.match(last().find((node) => node.banner).text, /Confirm it once more/)
 
   refuse = false
   await flows.createKeyFlow(out, then, { words: false, report })
@@ -163,7 +164,7 @@ test('sign-up: the button says what it does next', async () => {
   states.length = 0
   const noPrf = fakes(() => ({ rootFromPasskey: async () => { throw named(NO_PRF) } }))
   await noPrf.flows.createKeyFlow(noPrf.out, noPrf.then, { words: false, report: noPrf.report, onState })
-  assert.deepEqual(states, ['failed'])
+  assert.deepEqual(states, ['noprf'])
 })
 
 test('sign-up: a cancelled first prompt leaves nothing to confirm', async () => {

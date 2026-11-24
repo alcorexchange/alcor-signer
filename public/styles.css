@@ -189,7 +189,7 @@ button.brand-home:hover .brand-name { color: var(--text); }
    from one drawn by an infected page. */
 .host { display: flex; align-items: center; flex: none; font-family: var(--mono); font-size: 11px; color: var(--text-secondary); }
 .host svg { flex: none; margin-right: 6px; color: var(--primary); }
-.host-sub { color: var(--text-faint); }
+.host-sub { color: var(--text-muted); }
 
 /* ── screen title ───────────────────────────────────────── */
 
@@ -227,7 +227,7 @@ button.back:hover:not(:disabled) { background: var(--card-bg-hover); color: var(
   font-weight: 500;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: var(--text-faint);
+  color: var(--text-muted);
 }
 
 .note { margin: 0; padding: 0; font-size: 11.5px; line-height: 1.6; color: var(--text-muted); }
@@ -1041,7 +1041,8 @@ a.button:hover { background: var(--card-bg-hover); border-color: var(--border-st
 button:active:not(:disabled) { background: var(--card-bg-active); }
 button:disabled { opacity: 0.45; cursor: default; }
 button:focus-visible,
-a:focus-visible { outline: 1px solid var(--text-muted); outline-offset: 2px; }
+a:focus-visible,
+label.check:focus-visible { outline: 2px solid var(--text-muted); outline-offset: 2px; }
 
 a.button { display: flex; align-items: center; justify-content: center; gap: 7px; }
 

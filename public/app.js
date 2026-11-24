@@ -289,7 +289,7 @@ async function homeScreen() {
   const devices = loadDeviceKeys()
   if (!passkeys.length && !devices.length) return welcomeScreen()
 
-  // Security is about passkeys: recovery words and replacing one. A browser key's words were shown once.
+  // Security is about passkeys: their recovery words and replacing one. A browser key's words are in its own panel.
   screen({ body: [accountsSection(passkeys, devices), passkeys.length ? securitySection(passkeys) : null, passkeys.length ? techDetails(passkeys) : null] })
 }
 
@@ -317,7 +317,7 @@ function welcomeScreen({ created = (passkey, root) => newAccountScreen(passkey, 
           icon: ICONS.lock,
           tone: 'mint',
           title: 'Stays on this device',
-          sub: 'Unlocks with Face ID, fingerprint or PIN. Alcor never sees them',
+          sub: 'Unlocks the way you unlock this device. Alcor never sees it',
         }),
         tile({ icon: ICONS.shield, title: `Works only on ${location.host}`, sub: 'No other site can ask it to sign' }),
         tile({ icon: ICONS.download, title: '24 words as a backup', sub: 'Shown right after the key is made' }),
@@ -349,20 +349,22 @@ let prompting = false
 // making another, or every try would leave one more passkey on the device. Dropped once
 // it is cached some other way ("I already have a passkey" finds it too). Public halves only.
 let unconfirmed = null
+function forgetUnconfirmed() {
+  unconfirmed = null
+}
 
 // Said only right after making a key here: to someone with accounts, "create one again"
 // would read as "your key is gone".
-const MADE_WITHOUT_PRF =
-  'Passkeys on this device cannot make Alcor Signer keys. Create one again and pick another device in the prompt, ' +
-  'such as your phone by scanning the code. Or update this device.'
+const MADE_WITHOUT_PRF = 'Pick your phone in the passkey prompt, or continue without a passkey.'
 
 // `onFail(error)` — after the failure is on screen: a sign-up offers a key without a passkey.
 // `onState(state)` — what the same button does next, for its label: `failed` (make one
 // again), `pending` (confirm the one already made), `fresh` (nothing made yet).
-async function createKeyFlow(out, then, { words = true, report = () => {}, onFail = () => {}, onState = () => {} } = {}) {
+// `resetLink: false` — the screen puts "Make a new passkey instead" among its own links.
+async function createKeyFlow(out, then, { words = true, report = () => {}, onFail = () => {}, onState = () => {}, resetLink = true } = {}) {
   if (prompting) return
   if (unconfirmed && findPasskey(unconfirmed.publicKey)) unconfirmed = null
-  if (unconfirmed) return confirmKeyFlow(out, unconfirmed, then, { words, report, onFail, onState })
+  if (unconfirmed) return confirmKeyFlow(out, unconfirmed, then, { words, report, onFail, onState, resetLink })
   prompting = true
   report('create')
   out.replaceChildren(status('Creating the key — confirm with your passkey'))
@@ -378,11 +380,11 @@ async function createKeyFlow(out, then, { words = true, report = () => {}, onFai
   } finally {
     prompting = false
   }
-  return confirmKeyFlow(out, unconfirmed, then, { words, report, onFail, onState })
+  return confirmKeyFlow(out, unconfirmed, then, { words, report, onFail, onState, resetLink })
 }
 
 // The second prompt. One without PRF never works here, so the device is asked to drop it.
-async function confirmKeyFlow(out, created, then, { words, report, onFail, onState }) {
+async function confirmKeyFlow(out, created, then, { words, report, onFail, onState, resetLink }) {
   if (prompting) return
   prompting = true
   report('confirm')
@@ -399,22 +401,26 @@ async function confirmKeyFlow(out, created, then, { words, report, onFail, onSta
       out.replaceChildren(failure(Object.assign(new Error(MADE_WITHOUT_PRF), { name: NO_PRF })))
     } else if (error?.name === 'NotAllowedError') {
       // The key may sit on a phone that is gone: a new one stays one click away.
+      // One message: the key exists, one more confirmation finishes it.
       out.replaceChildren(
-        failure(error),
-        note('Your new passkey is made. Confirm it once more to finish — no second passkey is made.'),
-        el('div', { className: 'action-links' }, [
-          button('Make a new passkey instead', () => {
-            unconfirmed = null
-            out.replaceChildren()
-            onState('fresh')
-          }),
-        ])
+        banner('info', 'Your passkey is made. Confirm it once more to finish — no second passkey is made.'),
+        ...(resetLink
+          ? [
+              el('div', { className: 'action-links' }, [
+                button('Make a new passkey instead', () => {
+                  forgetUnconfirmed()
+                  out.replaceChildren()
+                  onState('fresh')
+                }),
+              ]),
+            ]
+          : [])
       )
     } else {
       unconfirmed = null
       out.replaceChildren(failure(error))
     }
-    onState(unconfirmed ? 'pending' : 'failed')
+    onState(unconfirmed ? 'pending' : error?.name === NO_PRF ? 'noprf' : 'failed')
     onFail(error)
     return
   } finally {
@@ -464,6 +470,9 @@ async function findKeyFlow(out, then, { onFail = (error) => out.replaceChildren(
 }
 
 // No re-typing check for the words: it annoys more than it catches (ADR-0010 §3).
+// One warning wherever the words are on screen.
+const WORDS_WARNING = 'Anyone with these words owns your accounts. Never type them into a website and never send them to anyone.'
+
 // `next(out)` — `out` is this screen's line for status and errors.
 function wordsScreen(
   root,
@@ -486,7 +495,7 @@ function wordsScreen(
   screen({
     body: [
       pageTitle(title, sub),
-      banner('danger', 'Anyone with these words owns your accounts. Never type them into a website and never send them to anyone.'),
+      banner('danger', WORDS_WARNING),
       wordGrid(root.words),
       consequences(facts),
       out,
@@ -569,15 +578,18 @@ function accountsSection(passkeys, devices = []) {
         ...(primary
           ? [addChoices(primary, out, { otherPasskey: true })]
           : [
-              // Before the first deposit there is no account row to open: the words are here.
-              el('div', { className: 'action-links' }, [
-                ...devices.flatMap((device, i) => [
-                  i ? el('span', { className: 'sep', textContent: '·' }) : null,
-                  button(devices.length === 1 ? 'Recovery phrase' : `Words of ${device.name}`, () => phraseScreen(device, { back: homeScreen, exportKeys: true })),
-                ]),
-                el('span', { className: 'sep', textContent: '·' }),
-                button('Restore with 24 words', () => restoreScreen()),
-              ]),
+              // Before the first deposit there is no account row to open: the words lead here,
+              // and Restore — which moves accounts — stays a quiet link, not their equal.
+              ...devices.map((device) =>
+                detour({
+                  icon: ICONS.download,
+                  tone: 'mint',
+                  title: devices.length === 1 ? 'Your 24 words' : `Words of ${device.name}`,
+                  sub: 'See them again and write them down',
+                  onclick: () => phraseScreen(device, { back: homeScreen, exportKeys: true }),
+                })
+              ),
+              el('div', { className: 'action-links' }, [button('Restore with 24 words', () => restoreScreen())]),
             ]),
         out
       )
@@ -1725,7 +1737,7 @@ function phraseScreen(passkey, { back = homeScreen, done: finish = back, confirm
 
       const go = done()
       step.replaceChildren(
-        banner('danger', 'Anyone with these words owns your accounts. Never type them into a website.'),
+        banner('danger', WORDS_WARNING),
         wordGrid(root.words),
         coverage
       )
@@ -1744,11 +1756,11 @@ function phraseScreen(passkey, { back = homeScreen, done: finish = back, confirm
       browserKey
         ? [
             tile({ icon: ICONS.eye, title: 'Derived, never stored', sub: 'This browser’s key computes them on the spot. The same words every time' }),
-            tile({ icon: ICONS.key, tone: 'mint', title: 'One phrase for this key', sub: 'Every account of it, on every network' }),
+            tile({ icon: ICONS.key, tone: 'mint', title: 'One phrase for this key', sub: 'Every account this key signs for' }),
           ]
         : [
             tile({ icon: ICONS.eye, title: 'Derived, never stored', sub: 'Your passkey computes them on the spot. The same words every time' }),
-            tile({ icon: ICONS.key, tone: 'mint', title: 'One phrase for this passkey', sub: 'Every account of it, on every network' }),
+            tile({ icon: ICONS.key, tone: 'mint', title: 'One phrase for this passkey', sub: 'Every account it signs for, on every network' }),
           ]
     )
   )
@@ -2820,12 +2832,13 @@ async function deviceKeyFlow({ out, reply, report, cancel, back = null }) {
     report('words')
     wordsScreen(root, {
       title: 'Your 24 words',
-      sub: 'Write them down: they bring the account back',
+      // The trade-off above the fold: under the words it was a scroll away from the tick.
+      sub: 'Your key lives only in this browser. If it is cleared, these words bring the account back.',
       facts: [
         // True as written: the key is non-extractable, never sent anywhere, and bound to this origin.
-        'Your key stays in this browser on this device. Only you hold it: Alcor never sees it, and no website can read it.',
-        'Each signature is a click in this window. Clearing the browser deletes the key; these words bring it back anywhere.',
-        'You can see the words again any time in Alcor Signer.',
+        'Only you hold the key: Alcor never sees it, and no website can read it.',
+        'Each signature is a click in this window, with no device unlock.',
+        'You can see these words again any time in Alcor Signer.',
       ],
       links: [...(back ? [['Back to passkey', () => (forgetRoot(root), back())]] : []), cancel],
       next: async (done) => {
@@ -2863,8 +2876,8 @@ function deviceKeyScreen({ reply, report, cancel }) {
       options([
         // True as written: the key is non-extractable, never sent anywhere, and bound to this origin.
         tile({ icon: ICONS.shield, tone: 'mint', title: 'Only you hold it', sub: 'Kept in this browser on this device. Alcor never sees it, and no website can read it' }),
-        tile({ icon: ICONS.check, title: 'A click to sign', sub: 'No Face ID: you confirm each signature in this window' }),
-        tile({ icon: ICONS.download, title: '24 words bring it back', sub: 'Clearing this browser deletes the key. The words bring it back' }),
+        tile({ icon: ICONS.check, title: 'A click to sign', sub: 'No device unlock: you confirm each signature in this window' }),
+        tile({ icon: ICONS.download, title: '24 words bring it back', sub: 'Clearing this browser deletes the key, so write them down' }),
       ]),
       out,
     ],
@@ -2974,49 +2987,53 @@ function loginScreen(incoming) {
     // Any passkey failure here offers the key in this browser: the person came to make an
     // account, and the passkey is what stood in the way.
     const offer = () => offerWithoutPasskey(out, () => browserKey(again))
-    // The button says what it does now: after a failed try it tries again, after a cancelled
-    // confirmation it confirms the passkey already made.
-    const LABEL = { fresh: 'Create a passkey', failed: 'Try again', pending: 'Confirm the passkey' }
-    const go = button(LABEL.fresh, () => createNew({ onFail: offer, onState: (state) => (go.textContent = LABEL[state]) }), 'primary')
-    screen({
-      body: [
-        state({
-          icon: ICONS.key,
-          title: `New ${chain.name} account`,
-          tagline: TAGLINE,
-          text: 'Your key is a passkey on this device: Face ID, fingerprint or PIN. No phrase to type.',
-        }),
-        out,
-      ],
-      actions: [go],
-      links: [
-        [
-          'I already have a passkey',
-          () =>
-            findKeyFlow(out, added, {
-              ownerOn,
-              report,
-              onFail: (error) =>
-                out.replaceChildren(error?.name === 'NotAllowedError' ? note('No passkey came back. New here? Create one.') : failure(error)),
-            }),
-        ],
-        cancel,
-      ],
+    // The screen follows what the button does next: after a failed try it tries again;
+    // with a passkey made but not confirmed it confirms that one, and "I already have a
+    // passkey" gives way to "Make a new passkey instead"; where this device's passkeys
+    // cannot make keys, the same prompt is opened for another device — a phone by its code.
+    const LABEL = { fresh: 'Create a passkey', failed: 'Try again', pending: 'Confirm the passkey', noprf: 'Use another device' }
+    const intro = state({
+      icon: ICONS.key,
+      title: `New ${chain.name} account`,
+      tagline: TAGLINE,
+      text: 'Your key is a passkey, unlocked the way you unlock this device. Alcor never sees it.',
     })
+    const findLink = [
+      'I already have a passkey',
+      () =>
+        findKeyFlow(out, added, {
+          ownerOn,
+          report,
+          onFail: (error) =>
+            out.replaceChildren(error?.name === 'NotAllowedError' ? note('No passkey came back. New here? Create one.') : failure(error)),
+        }),
+    ]
+    const makeNewLink = [
+      'Make a new passkey instead',
+      () => {
+        forgetUnconfirmed()
+        out.replaceChildren()
+        draw('fresh')
+      },
+    ]
+    const go = button(LABEL.fresh, () => createNew({ onFail: offer, onState: draw, resetLink: false }), 'primary')
+    function draw(next) {
+      go.textContent = LABEL[next]
+      screen({ body: [intro, out], actions: [go], links: [next === 'pending' ? makeNewLink : findLink, cancel] })
+    }
+    draw('fresh')
     report('signup')
     return
   }
 
+  // A browser key with no account yet, on a sign-up: the same keys go back — its words
+  // were shown when it was made — and no new words, no new key.
+  const sameBrowserKey = (device) =>
+    replyAndClose(reply, out, { ok: true, publicKey: device.publicKey, credentialId: null, account: null, owner: device.owner, level: null, key: 'device', wordsSaved: true })
+
   // No key cached here — usually a new device the passkey synced to, so lead with
   // signing in and offer a new key only if none came back. WebAuthn doesn't tell
   // "not found" from "cancelled" (privacy), so both get both buttons.
-  // A browser key with no account yet: a sign-up gets the same keys back — the words
-  // were saved when it was made — and a plain sign-in hears there is no account yet.
-  const deviceNoAccount = (device) =>
-    create
-      ? replyAndClose(reply, out, { ok: true, publicKey: device.publicKey, credentialId: null, account: null, owner: device.owner, level: null, key: 'device', wordsSaved: true })
-      : out.replaceChildren(note(`No ${chain.name} account uses this browser key yet.`))
-
   if (!passkeys.length && !deviceKeys.length) {
     const first = (failed) =>
       screen({
@@ -3120,7 +3137,8 @@ function loginScreen(incoming) {
               title: 'Create a new key',
               sub: 'For a different account',
               aside: icon(ICONS.chevron, 14),
-              onclick: () => createNew(),
+              // A sign-up whose new passkey fails can still go on without one.
+              onclick: () => createNew(create ? { onFail: () => offerWithoutPasskey(out, () => browserKey(again)) } : {}),
             }),
           ]),
         ]),
@@ -3130,45 +3148,75 @@ function loginScreen(incoming) {
       links: [cancel],
     })
 
-  const devices = deviceKeys
-  draw('your account', [...passkeys, ...devices].map(() => pick({ face: avatar(null), title: skeleton(96, 14), sub: skeleton(120, 10) })))
+  // Signed up before in this browser without a passkey, and the account is not open yet:
+  // the sign-up goes on with that key, no list to read. A key with an account goes to the list.
+  if (create && !passkeys.length) {
+    const intro = state({
+      icon: ICONS.lock,
+      title: `New ${chain.name} account`,
+      tagline: 'This browser already has your key',
+      text: 'It was made here earlier, with its 24 words. Continue with it — nothing new to write down.',
+    })
+    screen({ body: [intro, status('Checking the key')], links: [cancel] })
+    deviceAccountsOn(chain).then(
+      (found) => {
+        const used = new Set(found.map((entry) => entry.device.publicKey))
+        const free = deviceKeys.filter((device) => !used.has(device.publicKey)).sort((a, b) => b.createdAt - a.createdAt)
+        if (!free.length) return listAccounts()
+        screen({
+          body: [intro, out],
+          actions: [button('Continue with this browser key', () => sameBrowserKey(free[0]), 'primary')],
+          links: [cancel],
+        })
+      },
+      () => listAccounts()
+    )
+    return
+  }
+  listAccounts()
 
-  Promise.all([accountsOn(chain, passkeys), deviceAccountsOn(chain)]).then(
-    ([withPasskey, withDevice]) => {
-      const accounts = [...withPasskey, ...withDevice]
-      if (!accounts.length) {
-        draw(
-          passkeys.length + devices.length === 1 ? 'your key' : 'your keys',
-          [
-            ...passkeys.map((passkey) =>
-              pick({
-                face: avatar(null),
-                title: 'No account yet',
-                sub: `Key ${shortKey(passkey.publicKey)}`,
-                onclick: () => noAccount(passkey),
-              })
-            ),
-            ...devices.map((device) =>
-              pick({ face: avatar(null), title: 'No account yet', sub: `Browser key ${shortKey(device.publicKey)}`, onclick: () => deviceNoAccount(device) })
-            ),
-          ]
+  function listAccounts() {
+    const devices = deviceKeys
+    draw('your account', [...passkeys, ...devices].map(() => pick({ face: avatar(null), title: skeleton(96, 14), sub: skeleton(120, 10) })))
+
+    Promise.all([accountsOn(chain, passkeys), deviceAccountsOn(chain)]).then(
+      ([withPasskey, withDevice]) => {
+        const accounts = [...withPasskey, ...withDevice]
+        if (!accounts.length) {
+          draw(
+            passkeys.length + devices.length === 1 ? 'your key' : 'your keys',
+            [
+              ...passkeys.map((passkey) =>
+                pick({
+                  face: avatar(null),
+                  title: 'No account yet',
+                  sub: `Key ${shortKey(passkey.publicKey)}`,
+                  onclick: () => noAccount(passkey),
+                })
+              ),
+              // A sign-in has nothing to do with a key that has no account: the row says so and is not a button.
+              ...devices.map((device) =>
+                pick({ face: avatar(null), title: 'No account yet', sub: `Key in this browser ${shortKey(device.publicKey)}`, onclick: create ? () => sameBrowserKey(device) : undefined })
+              ),
+            ]
+          )
+          return
+        }
+
+        const rows = accounts.map((entry) =>
+          pick({ face: avatar(entry.name), title: entry.name, sub: entry.device ? 'Key in this browser' : 'Passkey on this device', onclick: () => signIn(entry) })
         )
-        return
-      }
-
-      const rows = accounts.map((entry) =>
-        pick({ face: avatar(entry.name), title: entry.name, sub: entry.device ? 'Key in this browser' : 'Passkey on this device', onclick: () => signIn(entry) })
-      )
-      const [only] = accounts
-      draw(
-        // Only the app's network: other networks are hidden on purpose.
-        accounts.length === 1 ? `your ${chain.name} account` : `your ${chain.name} accounts`,
-        rows,
-        accounts.length === 1 ? [button(`Continue as ${only.name}`, () => signIn(only), 'primary')] : []
-      )
-    },
-    (error) => draw('your account', [failure(error)], [button('Try again', again, 'primary')])
-  )
+        const [only] = accounts
+        draw(
+          // Only the app's network: other networks are hidden on purpose.
+          accounts.length === 1 ? `your ${chain.name} account` : `your ${chain.name} accounts`,
+          rows,
+          accounts.length === 1 ? [button(`Continue as ${only.name}`, () => signIn(only), 'primary')] : []
+        )
+      },
+      (error) => draw('your account', [failure(error)], [button('Try again', again, 'primary')])
+    )
+  }
 }
 
 /**
@@ -3562,19 +3610,23 @@ function finishScreen({ request, reply }) {
       },
     })
 
+  // Keys and permissions stay in Technical details (README «Язык интерфейса»): the person
+  // needs to know what Finish does for them, not which key moves where.
   screen({
     body: [
       state({
         icon: ICONS.user,
         title: `Finish ${name}`,
         text: device
-          ? `${name} was opened with your owner key alone. Finish puts this browser’s key on active, the owner key stays on owner, and ${from} signs you in.`
-          : `${name} was opened with your owner key alone. One passkey confirmation puts your passkey on active, the owner key stays on owner, and ${from} signs you in.`,
+          ? `Your account is open. Finish lets this browser sign for it — nothing moves, and ${from} signs you in.`
+          : `Your account is open. Finish lets your passkey sign for it — one confirmation, nothing moves, and ${from} signs you in.`,
       }),
-      card([
-        field('account', mono(name)),
-        field('adds to active', mono(key.publicKey)),
-        field('removes from active', mono(owner)),
+      disclosure('Technical details', [
+        card([
+          field('account', mono(name)),
+          field('adds to active', mono(key.publicKey)),
+          field('removes from active', mono(owner)),
+        ]),
       ]),
     ],
     actions: [button('Finish', finish, 'primary')],
