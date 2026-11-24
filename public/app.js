@@ -475,6 +475,7 @@ function wordsScreen(
       'Alcor keeps no copy. Your passkey can show them again at any time.',
       'Lose the passkey and these words are the only way back.',
     ],
+    links = [],
     next,
   }
 ) {
@@ -488,10 +489,12 @@ function wordsScreen(
       banner('danger', 'Anyone with these words owns your accounts. Never type them into a website and never send them to anyone.'),
       wordGrid(root.words),
       consequences(facts),
-      checkbox('I saved these words somewhere safe', (on) => (go.disabled = !on)),
       out,
     ],
-    actions: [go],
+    // Beside the button it unlocks: under the words it fell below the fold, and Continue
+    // looked dead for no reason on screen.
+    actions: [checkbox('I saved these words somewhere safe', (on) => (go.disabled = !on)), go],
+    links,
   })
 }
 
@@ -1009,7 +1012,15 @@ function devicePanel(entry, { onState }) {
         : [
             el('div', { className: 'level-actions' }, [
               inlineAction('Recovery phrase', ICONS.download, () => phraseScreen(entry.device, { back: homeScreen, exportKeys: true })),
-              inlineAction('Move to a passkey', ICONS.key, () => restoreScreen()),
+              // The words come from this key's master key: nothing to type.
+              canMakePasskeys()
+                ? inlineAction('Move to a passkey', ICONS.key, () =>
+                    deviceRoot(entry.device.publicKey).then(
+                      (root) => restoreScreen({ root }),
+                      (error) => box.append(failure(error))
+                    )
+                  )
+                : null,
             ]),
           ])
     )
@@ -1716,10 +1727,10 @@ function phraseScreen(passkey, { back = homeScreen, done: finish = back, confirm
       step.replaceChildren(
         banner('danger', 'Anyone with these words owns your accounts. Never type them into a website.'),
         wordGrid(root.words),
-        ...(confirm ? [checkbox('I saved these words somewhere safe', (on) => (go.disabled = !on))] : []),
         coverage
       )
-      draw([go])
+      // The tick sits beside the button it unlocks, never below the fold.
+      draw([...(confirm ? [checkbox('I saved these words somewhere safe', (on) => (go.disabled = !on))] : []), go])
 
       coverage.replaceChildren(await coverageSection(passkey, root, out, { exportKeys }))
     } catch (error) {
@@ -2211,25 +2222,34 @@ function accessRow(entry, group, onchange) {
 
 const linkText = (link) => (link.action ? `${link.account} ${link.action}` : `${link.account} (any action)`)
 
-function restoreScreen() {
+// `root` — words this window already has (a browser key's master key, "Move to a passkey"):
+// nothing to type, and the move goes to a passkey, the reason it was asked for.
+function restoreScreen({ root = null } = {}) {
   const out = stack([])
   const input = secretInput({ placeholder: '24 words, separated by spaces', multiline: true })
+  const toPasskeyOnly = Boolean(root)
 
   screen({
-    body: [
-      pageTitle('Restore with recovery phrase', 'For when the passkey is gone'),
-      banner('warn', `Type the words only here, on ${location.host}. Alcor never asks for them anywhere else.`),
-      input,
-      out,
-    ],
-    actions: [button('Find my accounts', () => find(), 'primary')],
-    back: () => homeScreen(),
+    body: root
+      ? [pageTitle('Move to a passkey', 'Your accounts move from this browser’s key to a new passkey'), out]
+      : [
+          pageTitle('Restore with recovery phrase', 'For when the passkey is gone'),
+          banner('warn', `Type the words only here, on ${location.host}. Alcor never asks for them anywhere else.`),
+          input,
+          out,
+        ],
+    actions: root ? [] : [button('Find my accounts', () => find(), 'primary')],
+    back: () => {
+      forgetRoot(root)
+      homeScreen()
+    },
   })
+  if (root) find(root)
 
-  async function find() {
+  async function find(given = null) {
     let oldRoot
     try {
-      oldRoot = rootFromWords(input.value)
+      oldRoot = given ?? rootFromWords(input.value)
     } catch (error) {
       out.replaceChildren(failure(error))
       return
@@ -2392,6 +2412,8 @@ function restoreScreen() {
       }
 
       const passkeyTarget = canMakePasskeys()
+      // Moving off a browser key to another browser key would change nothing but the words.
+      const browserTarget = !toPasskeyOnly
 
       screen({
         body: [
@@ -2423,7 +2445,7 @@ function restoreScreen() {
         ],
         links: [
           // New words and a key in this browser alone (README «Аккаунт без passkey»).
-          passkeyTarget ? ['Keep it in this browser instead', () => toBrowser(accounts)] : null,
+          passkeyTarget && browserTarget ? ['Keep it in this browser instead', () => toBrowser(accounts)] : null,
           [
             'Cancel',
             () => {
@@ -2782,65 +2804,72 @@ function techDetails(passkeys) {
 // A sign-up without a passkey (README «Аккаунт без passkey»): a key that lives in this
 // browser alone, and the owner from the 24 words of its master key (`rootFromSeed`), shown
 // now and again whenever asked, as a passkey's are. Nothing is kept until "I saved these
-// words": a window closed on them leaves no key.
-function deviceKeyScreen({ reply, report, cancel, back = null, unsupported = false }) {
+// words": a window closed on them leaves no key. Straight to the words: the row that led
+// here already said what this is, and the words screen says the rest. `out` — where an
+// error before the words shows.
+async function deviceKeyFlow({ out, reply, report, cancel, back = null }) {
+  let root = null
+  try {
+    // A browser that keeps no keys says so now, not after the words are written down.
+    await refreshDeviceKeys()
+    const made = await makeDeviceKey()
+    root = await rootFromSeed(made.seed)
+    forgetOnHome(() => forgetRoot(root))
+    const owner = ownerPublicKey(root, chain, 0)
+
+    report('words')
+    wordsScreen(root, {
+      title: 'Your 24 words',
+      sub: 'Write them down: they bring the account back',
+      facts: [
+        // True as written: the key is non-extractable, never sent anywhere, and bound to this origin.
+        'Your key stays in this browser on this device. Only you hold it: Alcor never sees it, and no website can read it.',
+        'Each signature is a click in this window. Clearing the browser deletes the key; these words bring it back anywhere.',
+        'You can see the words again any time in Alcor Signer.',
+      ],
+      links: [...(back ? [['Back to passkey', () => (forgetRoot(root), back())]] : []), cancel],
+      next: async (done) => {
+        try {
+          const kept = await keepDeviceKey(made, { chainIds: [chain.chainId], owner })
+          forgetRoot(root)
+          // Best effort: asks the browser not to clear the key under storage pressure.
+          navigator.storage?.persist?.().catch(() => {})
+          replyAndClose(reply, done, { ok: true, publicKey: kept.publicKey, credentialId: null, account: null, owner, level: null, key: 'device', wordsSaved: true })
+        } catch (error) {
+          done.replaceChildren(failure(error))
+        }
+      },
+    })
+  } catch (error) {
+    forgetRoot(root)
+    out.replaceChildren(failure(error))
+  }
+}
+
+// A browser with no WebAuthn lands here first, having seen nothing else: one screen on
+// what a key in the browser is, then the words.
+function deviceKeyScreen({ reply, report, cancel }) {
   const out = stack([])
   report('device')
-
-  const create = async () => {
-    let root = null
-    try {
-      // A browser that keeps no keys says so now, not after the words are written down.
-      await refreshDeviceKeys()
-      const made = await makeDeviceKey()
-      root = await rootFromSeed(made.seed)
-      forgetOnHome(() => forgetRoot(root))
-      const owner = ownerPublicKey(root, chain, 0)
-
-      report('words')
-      wordsScreen(root, {
-        title: 'Your 24 words',
-        sub: 'The way back if this browser is cleared',
-        facts: [
-          'The key lives in this browser only. Clearing it, or losing this device, deletes the key — and the words bring it back in any browser.',
-          'Alcor keeps no copy. This browser’s key can show them again at any time, from the Signer.',
-        ],
-        next: async (done) => {
-          try {
-            const kept = await keepDeviceKey(made, { chainIds: [chain.chainId], owner })
-            forgetRoot(root)
-            // Best effort: asks the browser not to clear the key under storage pressure.
-            navigator.storage?.persist?.().catch(() => {})
-            replyAndClose(reply, done, { ok: true, publicKey: kept.publicKey, credentialId: null, account: null, owner, level: null, key: 'device', wordsSaved: true })
-          } catch (error) {
-            done.replaceChildren(failure(error))
-          }
-        },
-      })
-    } catch (error) {
-      forgetRoot(root)
-      out.replaceChildren(failure(error))
-    }
-  }
 
   screen({
     body: [
       state({
         icon: ICONS.lock,
         title: 'Keep the key in this browser',
-        tagline: unsupported ? 'This browser cannot make passkeys' : undefined,
-        text: 'No passkey needed. Your account opens with a key kept right here, and 24 words to bring it back.',
+        tagline: 'This browser cannot make passkeys',
+        text: 'Your account opens with a key kept right here, and 24 words to bring it back.',
       }),
       options([
         // True as written: the key is non-extractable, never sent anywhere, and bound to this origin.
         tile({ icon: ICONS.shield, tone: 'mint', title: 'Only you hold it', sub: 'Kept in this browser on this device. Alcor never sees it, and no website can read it' }),
         tile({ icon: ICONS.check, title: 'A click to sign', sub: 'No Face ID: you confirm each signature in this window' }),
-        tile({ icon: ICONS.download, title: '24 words bring it back', sub: 'Clearing this browser deletes the key. The words are the only way back' }),
+        tile({ icon: ICONS.download, title: '24 words bring it back', sub: 'Clearing this browser deletes the key. The words bring it back' }),
       ]),
       out,
     ],
-    actions: [button('Create the key', create, 'primary')],
-    links: back ? [['Back to passkey', back], cancel] : [cancel],
+    actions: [button('Create the key', () => deviceKeyFlow({ out, reply, report, cancel }), 'primary')],
+    links: [cancel],
   })
 }
 
@@ -2934,10 +2963,10 @@ function loginScreen(incoming) {
   // screen as it was, and only a real error is shown.
   // A browser key belongs to one network: others' keys mean nothing here.
   const deviceKeys = loadDeviceKeys().filter((device) => servesNetwork(device, chain.chainId))
-  const browserKey = (back) => deviceKeyScreen({ reply, report, cancel, back })
+  const browserKey = (back) => deviceKeyFlow({ out, reply, report, cancel, back })
 
   if (create && !passkeys.length && !deviceKeys.length && !canMakePasskeys()) {
-    deviceKeyScreen({ reply, report, cancel, unsupported: true })
+    deviceKeyScreen({ reply, report, cancel })
     return
   }
 
@@ -3355,9 +3384,8 @@ function createScreen({ request, reply }) {
     )
 
   // No passkey here: a browser that cannot make one gets a key of its own, the rest may choose it.
-  const browserKey = (back = null) => deviceKeyScreen({ reply, report: () => {}, cancel, back })
   if (!passkeys.length && !canMakePasskeys()) {
-    browserKey()
+    deviceKeyScreen({ reply, report: () => {}, cancel })
     return
   }
 
@@ -3373,7 +3401,7 @@ function createScreen({ request, reply }) {
         out,
       ],
       actions: [button('Use my passkey', findOther, 'primary'), button('Create a passkey', createNew)],
-      links: [['Without a passkey', () => browserKey(again)], cancel],
+      links: [['Without a passkey', () => deviceKeyFlow({ out, reply, report: () => {}, cancel, back: again })], cancel],
     })
     return
   }
