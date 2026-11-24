@@ -97,3 +97,47 @@ export function proofDigest(text) {
   preimage.set(body, head.length)
   return Checksum256.hash(Bytes.from(preimage))
 }
+
+// A deposit address's rename (alcor-bridge docs/FRONTEND.md §2.4): the owner key's word that
+// the address may open another name, after the one it asked for was taken on the way. The
+// courier rebuilds this text (services/courier/signup.ts `renameText`) and checks the owner
+// key signed it under the proof prefix above. Its first line can never start a proof's.
+// Only networks with an account factory, mainnet: the courier has no other.
+const RENAME_NETWORKS = new Set(['telos', 'wax', 'xpr'])
+// Under the courier's hour, so a slow click or a skewed clock still lands inside it.
+export const RENAME_LIFETIME_S = 50 * 60
+const EVM_ADDRESS = /^0x[0-9a-fA-F]{40}$/
+
+/**
+ * The fields of a rename, or a refusal saying what is wrong. The network comes from the
+ * registry and the expiry from the window's clock; the app names only the address and the names.
+ *
+ * @param {{ address: unknown, from: unknown, to: unknown }} request
+ * @param {{ id: string }} chain
+ * @param {number} nowMs
+ */
+export function renameFields(request, chain, nowMs) {
+  const { address, from, to } = request
+  if (!RENAME_NETWORKS.has(chain.id)) throw new Error('Deposit addresses open accounts only on Telos, WAX and XPR Network.')
+  if (typeof address !== 'string' || !EVM_ADDRESS.test(address)) throw new Error('The deposit address is not valid.')
+  if (!canonicalName(from) || !canonicalName(to)) throw new Error('The account name is not valid.')
+  if (from === to) throw new Error('The new name is the same as the old one.')
+
+  return {
+    address: address.toLowerCase(),
+    network: chain.id,
+    from,
+    to,
+    expires: isoSeconds(Math.floor(nowMs / 1000) + RENAME_LIFETIME_S),
+  }
+}
+
+export const renameText = (fields) =>
+  [
+    'Alcor deposit address rename',
+    `Address: ${fields.address}`,
+    `Network: ${fields.network}`,
+    `From: ${fields.from}`,
+    `To: ${fields.to}`,
+    `Expires: ${fields.expires}`,
+  ].join('\n')

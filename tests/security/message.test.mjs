@@ -4,7 +4,9 @@ import { test } from 'node:test'
 import { createHash, webcrypto } from 'node:crypto'
 import { Checksum256, Transaction } from '../../public/vendor/wharfkit.js'
 import { CHAINS } from '../../public/chain.js'
-import { PROOF_PREFIX, proofDigest, proofFields, proofText } from '../../public/message.js'
+import { PROOF_PREFIX, RENAME_LIFETIME_S, proofDigest, proofFields, proofText, renameFields, renameText } from '../../public/message.js'
+import { PrivateKey, Signature } from '../../public/vendor/wharfkit.js'
+import { k1PublicKey, signK1 } from '../../public/k1.js'
 import { fakePasskey } from '../fake-passkey.mjs'
 
 globalThis.crypto ??= webcrypto
@@ -105,4 +107,47 @@ test('message: a passkey signature commits to the digest as its challenge', () =
   const json = new TextDecoder().decode(signature.data.array).match(/\{"type".*\}/)[0]
   assert.equal(Buffer.from(JSON.parse(json).challenge, 'base64url').toString('hex'), String(digest))
   assert.ok(digest instanceof Checksum256)
+})
+
+// A deposit address's rename: the courier rebuilds this text (alcor-bridge services/courier/signup.ts
+// `renameText`) and checks the owner key signed it under the proof prefix.
+const ADDRESS = '0x8A364Bf47F107CC487a664b8De6F6635B9E74774'
+const rename = (over = {}, on = CHAINS.wax) => renameFields({ address: ADDRESS, from: 'vasya.al', to: 'petya.al', ...over }, on, NOW)
+
+test('rename: the exact text the courier rebuilds, expiry from the window', () => {
+  const out = rename({ expires: '2099-01-01T00:00:00Z', network: 'telos' })
+  assert.equal(out.network, 'wax')
+  assert.equal(out.expires, '2026-11-21T12:50:00Z')
+  assert.ok(RENAME_LIFETIME_S < 3600, 'under the courier’s hour')
+  assert.equal(
+    renameText(out),
+    [
+      'Alcor deposit address rename',
+      'Address: 0x8a364bf47f107cc487a664b8de6f6635b9e74774',
+      'Network: wax',
+      'From: vasya.al',
+      'To: petya.al',
+      'Expires: 2026-11-21T12:50:00Z',
+    ].join('\n')
+  )
+})
+
+test('rename: only Telos, WAX and XPR, and only well-formed fields', () => {
+  for (const id of Object.keys(CHAINS).filter((id) => !['telos', 'wax', 'xpr'].includes(id))) {
+    assert.throws(() => rename({}, CHAINS[id]), /only on Telos, WAX and XPR/, id)
+  }
+  assert.throws(() => rename({ address: '0x1234' }), /address is not valid/)
+  assert.throws(() => rename({ address: `${ADDRESS}\nTo: evil` }), /address is not valid/)
+  assert.throws(() => rename({ to: 'Petya.al' }), /name is not valid/)
+  assert.throws(() => rename({ to: 'petya.al\nExpires: 2099-01-01T00:00:00Z' }), /name is not valid/)
+  assert.throws(() => rename({ to: 'vasya.al' }), /same as the old one/)
+})
+
+test('rename: can never pass as a proof, and the owner key recovers from its signature', () => {
+  const text = renameText(rename())
+  assert.ok(!text.includes('wants you to sign in'))
+  // The well-known eosio development key: public on purpose.
+  const key = PrivateKey.from('5KQwrPbwdL6PhXujxW37FSSQZ1JiwsST4cqQzDeyXtP79zkvFD3')
+  const signature = signK1(key, proofDigest(text))
+  assert.equal(String(Signature.from(String(signature)).recoverDigest(proofDigest(text))), k1PublicKey(key))
 })

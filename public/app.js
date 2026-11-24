@@ -88,7 +88,7 @@ import {
   scopeOf,
   setAutoSign,
 } from './session.js'
-import { k1PublicKey } from './k1.js'
+import { k1PublicKey, signK1 } from './k1.js'
 import {
   autoDeviceSigner,
   addDeviceNetwork,
@@ -118,7 +118,7 @@ import {
   rootFromWords,
 } from './root.js'
 import { NO_PRF, assertWithPrf, dropCredential, signDigest } from './passkey.js'
-import { proofDigest, proofFields, proofText } from './message.js'
+import { proofDigest, proofFields, proofText, renameFields, renameText } from './message.js'
 import { discoverPasskey } from './discover.js'
 import { PrivateKey } from './vendor/wharfkit.js'
 import {
@@ -3588,9 +3588,10 @@ function onlyOurs(permissions, owner, passkey) {
 }
 
 // `finish`: an account the app opened with the owner key alone — the account factory's
-// digits-only memo, for exchanges, carries one K1 for both owner and active. The owner
-// key, derived from the root again, puts the passkey on active in its place; after that
-// the account is an ordinary login.
+// digits-only memo (exchanges, and every deposit address to WAX and XPR) carries one K1
+// for both owner and active. It reads as the account's first sign-in: one screen, one
+// click, one passkey touch — the owner key, derived from the root again, puts the passkey
+// on active in its place, and the app signs in. After that the account is an ordinary login.
 function finishScreen({ request, reply }) {
   const from = appName(request.appOrigin)
   const name = String(request.account ?? '')
@@ -3636,7 +3637,7 @@ function finishScreen({ request, reply }) {
 
   const finish = () =>
     attempt({
-      title: ['Finish ', accent(name)],
+      title: ['Sign in as ', accent(name)],
       sub: chain.name,
       busy: 'Checking the account',
       back: () => finishScreen({ request, reply }),
@@ -3666,15 +3667,16 @@ function finishScreen({ request, reply }) {
     })
 
   // Keys and permissions stay in Technical details (README «Язык интерфейса»): the person
-  // needs to know what Finish does for them, not which key moves where.
+  // needs to know what signing in does for them, not which key moves where. Still said in
+  // a line: this first sign-in changes who signs for the account.
   screen({
     body: [
       state({
         icon: ICONS.user,
-        title: `Finish ${name}`,
+        title: `${name} is ready`,
         text: device
-          ? `Your account is open. Finish lets this browser sign for it — nothing moves, and ${from} signs you in.`
-          : `Your account is open. Finish lets your passkey sign for it — one confirmation, nothing moves, and ${from} signs you in.`,
+          ? `Sign in to ${from} with it. This first time, this browser starts signing for ${name} — nothing moves.`
+          : `Sign in to ${from} with it. This first time, your passkey starts signing for ${name} — one confirmation, nothing moves.`,
       }),
       disclosure('Technical details', [
         card([
@@ -3684,7 +3686,7 @@ function finishScreen({ request, reply }) {
         ]),
       ]),
     ],
-    actions: [button('Finish', finish, 'primary')],
+    actions: [button('Sign in', finish, 'primary')],
     links: [cancel],
   })
 }
@@ -4305,6 +4307,87 @@ async function proveScreen({ request, reply }) {
   })
 }
 
+// `renameSign`: the owner key signs a deposit address's rename (`renameFields`). Not a
+// transaction, and no keys change: the new name opens with the same keys, so the most a
+// compromised app gets is another name for the person's own account. Still the owner key:
+// a click here (and a passkey touch), with the whole text one tap away.
+function renameScreen({ request, reply }) {
+  const from = appName(request.appOrigin)
+  const passkey = findPasskey(String(request.publicKey ?? ''))
+  const device = passkey ? null : findDeviceKey(String(request.publicKey ?? ''))
+  const owner = String(request.owner ?? '')
+
+  if (!passkey && !device) {
+    refuseRequest(reply, { title: 'Unknown key', text: 'This key was not created here.', error: 'Unknown key' })
+    return
+  }
+  if (!owner.startsWith('PUB_K1_')) {
+    refuseRequest(reply, { text: 'The app named a key that cannot exist.' })
+    return
+  }
+
+  let fields
+  try {
+    fields = renameFields(request, chain, Date.now())
+  } catch (error) {
+    refuseRequest(reply, { text: error.message })
+    return
+  }
+
+  const text = renameText(fields)
+  const out = stack([])
+  const reject = [
+    'Reject',
+    () => {
+      reply({ ok: false, error: 'Rejected by the user', rejected: true })
+      window.close()
+    },
+    'danger',
+  ]
+
+  const sign = async () => {
+    out.replaceChildren()
+    setBusy(confirm, passkey ? 'Waiting for your passkey' : 'Signing')
+    let root = null
+    let ownerKey = null
+    try {
+      root = passkey ? await rootFromPasskey(passkey) : await deviceRoot(device.publicKey)
+      ownerKey = ownerKeyOf(root, chain, owner)
+      if (!ownerKey) throw new Error(`${shortKey(owner)} is not from ${passkey ? 'this passkey’s' : 'this browser key’s'} 24 words`)
+      const signature = signK1(ownerKey.privateKey, proofDigest(text))
+      reply({ ok: true, account: fields.to, expires: fields.expires, signature: String(signature) })
+      setDone(confirm, 'Signed — back to the app')
+      setTimeout(() => window.close(), 400)
+    } catch (error) {
+      out.replaceChildren(failure(error))
+      setBusy(confirm, null)
+    } finally {
+      ownerKey?.privateKey.data.array.fill(0)
+      forgetRoot(root)
+    }
+  }
+
+  const confirm = signButton(passkey ? 'Sign with passkey' : 'Sign', sign)
+
+  screen({
+    body: [
+      pageTitle(['Open ', accent(fields.to), ' instead'], `${chain.name} · from ${from}`),
+      section('your deposit address', [
+        card([
+          field('name asked for', mono(fields.from)),
+          field('opens instead', mono(fields.to)),
+          field('address', mono(fields.address)),
+          field('Valid until', clock(new Date(fields.expires))),
+        ]),
+      ]),
+      note(`Not a transaction: it moves no funds and changes no keys. ${fields.to} opens with your own keys, and what waits at this address goes there.`),
+      disclosure('What exactly gets signed', [el('pre', { className: 'proof-text', textContent: text })]),
+    ],
+    actions: [out, confirm],
+    links: [reject],
+  })
+}
+
 // ─────────────────────────────────────────────── settings from the app
 
 /**
@@ -4585,6 +4668,7 @@ if (isEmbedded()) {
     else if (incoming.request.kind === 'settings') settingsScreen(incoming)
     else if (incoming.request.kind === 'import') importRequest(incoming)
     else if (incoming.request.kind === 'prove') await proveScreen(incoming)
+    else if (incoming.request.kind === 'renameSign') renameScreen(incoming)
     else if (incoming.request.kind === 'sign') await confirmScreen(incoming)
     else refuseRequest(incoming.reply, { title: 'Not supported', text: 'This window does not know what the app asked for.' })
   }

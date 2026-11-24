@@ -361,8 +361,9 @@ yarn vendor    # перепроверка: собрать заново и све
 | из app, `kind: 'login'` + `create: true`, новый ключ | `createKeyFlow({ words: false })` | два касания passkey, без слов и без экрана ключей: сразу `ok: true, account: null`, `publicKey`, `credentialId`, `owner` (K1 из корня, номер 0), `level: null`. Слова — потом, `kind: 'backup'` |
 | из app, `kind: 'login'` + `create: true`, ключ без аккаунта | `findKeyFlow({ ownerOn })` → `handKeysScreen` | ничего не подписывает; owner выводится из корня того же касания, что нашло ключ (нода не ответила — одно касание позже, на кнопке); по кнопке отдаёт `ok: true, account: null`, `publicKey` (`PUB_WA_` → active) и `owner` (K1 из корня, первый свободный номер → owner). Аккаунт заводит app; Signer найдёт его по ключу при следующем открытии |
 | из app, `kind: 'create'` (`publicKey` — подсказка) | `createScreen` | ещё один аккаунт под passkey: человек уже вошёл в app и платит фабрике с текущего аккаунта. Ничего не подписывает; по касанию passkey выводит owner — первый свободный номер (`nextFreeIndex`), так что те же 24 слова возвращают все аккаунты ключа. Подсказка выбирает passkey по умолчанию, только если он есть на устройстве; другой — «Use a different key». Ключей на устройстве нет — найти passkey или создать новый (номер 0, без слов). Отдаёт `ok: true, account: null`, `publicKey`, `credentialId`, `owner`, `level: null` |
-| из app, `kind: 'finish'` (`account`, `publicKey`, `owner`) | `finishScreen` | аккаунт, открытый одним owner-ключом: digits-only memo фабрики (`contracts/account_factory`) кладёт один K1 и в owner, и в active. Ноды должны согласиться, что owner держит этот ключ; Signer выводит его из корня passkey (`ownerKeyOf`, без сети) и им подписывает `updateauth` active: + passkey, − owner-ключ. Passkey уже на active — подписи нет. Отдаёт ответ входа (`account`, `level: 'passkey'`) |
+| из app, `kind: 'finish'` (`account`, `publicKey`, `owner`) | `finishScreen` | первый вход в аккаунт, открытый одним owner-ключом (так открываются все депозитные адреса в WAX и XPR): digits-only memo фабрики (`contracts/account_factory`) кладёт один K1 и в owner, и в active. Ноды должны согласиться, что owner держит этот ключ; Signer выводит его из корня passkey (`ownerKeyOf`, без сети) и им подписывает `updateauth` active: + passkey, − owner-ключ. Passkey уже на active — подписи нет. Отдаёт ответ входа (`account`, `level: 'passkey'`). Экран — «<name> is ready», кнопка «Sign in»: один клик и одно касание, проверка `onlyOurs` до подписи, ключи под Technical details |
 | из app, `kind: 'backup'` (`publicKey`) | `backupScreen` → `phraseScreen({ confirm: true })` | слова для passkey с этим ключом (на устройстве — иначе отказ): по касанию, «Done» только после галки «I saved these words somewhere safe». Ничего не подписывает; отдаёт `ok: true` без слов; закрыть / Cancel — отказ |
+| из app, `kind: 'renameSign'` (`publicKey`, `owner`, `address`, `from`, `to`) | `renameScreen` | подпись owner-ключом под переименованием депозитного адреса (см. «Переименование депозитного адреса»): ни транзакции, ни смены ключей. Отдаёт `account`, `expires`, `signature`. Партнёрам — отказ |
 | из app, `kind: 'sign'` | `confirmScreen` | сводка, подписант, режим подписи строкой, по клику — три режима с пояснениями (`modePicker`; действует со следующей подписи), кнопки |
 | из app, но запрос не дошёл | `timeoutScreen` | список разрешённых origin |
 | из app, прислали смену прав | отказ | экран «Отклонено», подпись невозможна |
@@ -540,6 +541,33 @@ Expiration Time: {ISO, секунды, Z}
 `tests/chain/msgproof.local.mjs` (не в `yarn test`: нужны `nodeos`, `cdt-cpp` и
 соседний `alcor-examples`): подписывает кодом Signer на локальной цепи, проверяет
 контрактом и восстанавливает тот же ключ вне цепи.
+
+### Переименование депозитного адреса (`renameSign`)
+
+Депозитный адрес открывает аккаунт с выбранным именем; если имя заняли раньше,
+courier переименовывает адрес только по подписи owner-ключа (alcor-bridge
+`docs/FRONTEND.md` §2.4). Текст собирает окно (`renameFields`, `renameText` в
+`message.js`), от app — только адрес и имена:
+
+```
+Alcor deposit address rename
+Address: <адрес, строчными>
+Network: telos | wax | xpr
+From: <имя, которое просил адрес>
+To: <новое имя>
+Expires: <UTC до секунды, +50 минут>
+```
+
+- Сеть — `id` из реестра и только `telos`, `wax`, `xpr`: у courier нет тестнетов,
+  в остальных сетях окно отказывает. Срок ставит окно (courier берёт не дальше
+  часа). Подпись — тот же префикс, что у `prove` (`proofDigest`); первая строка
+  никогда не совпадёт с доказательством, поэтому подпись одного не выдать за другое.
+- Ключ — owner из корня (касание passkey, у ключа в браузере — мастер-ключ),
+  `ownerKeyOf` должен найти присланный `owner` среди своих слотов.
+- Ключи не меняются: новое имя открывается теми же ключами, так что худшее, что
+  может скомпрометированный app, — другое имя для своего же аккаунта.
+- Формат живёт ещё в `services/courier/signup.ts` (`renameText`, `renameDigest`).
+  Меняешь — оба сразу.
 
 ## Уровни подписи
 
