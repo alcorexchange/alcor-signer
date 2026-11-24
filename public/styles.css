@@ -383,6 +383,17 @@ button.choice:hover:not(:disabled) { background: var(--card-bg-hover); }
 .choice-go { flex: none; display: flex; color: var(--text-faint); transition: transform var(--duration), color var(--duration); }
 button.choice:hover:not(:disabled) .choice-go { transform: translateX(2px); color: var(--primary); }
 
+/* After a failure, the second way on: framed and full width, quieter than the primary button. */
+button.choice.detour {
+  width: 100%;
+  margin: 0;
+  padding: 13px 14px;
+  border: 1px solid var(--border-strong);
+  background: var(--card-bg);
+}
+button.choice.detour:hover:not(:disabled) { border-color: var(--primary-border); background: var(--card-bg-hover); }
+button.choice.detour .choice-go { color: var(--text-muted); }
+
 /* ── segments ───────────────────────────────────────────── */
 
 .segmented {

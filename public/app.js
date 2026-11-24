@@ -19,6 +19,7 @@ import {
   chainLogo,
   chip,
   choice,
+  detour,
   chrome,
   confirmDialog,
   consequences,
@@ -2785,13 +2786,18 @@ function deviceKeyScreen({ reply, report, cancel, back = null, unsupported = fal
   })
 }
 
-// After a passkey failed on a sign-up: the way on without one, under the error — in the
-// same row as a link already there, not a row of its own.
+// After a passkey failed on a sign-up: the way on without one, under the error, as a
+// path of its own — a grey link there read as a footnote and was missed.
 function offerWithoutPasskey(out, open) {
-  const link = button('Continue without a passkey', open)
-  const row = out.querySelector('.action-links')
-  if (row) row.append(el('span', { className: 'sep', textContent: '·' }), link)
-  else out.append(el('div', { className: 'action-links' }, [link]))
+  out.append(
+    detour({
+      icon: ICONS.lock,
+      tone: 'mint',
+      title: 'Continue without a passkey',
+      sub: 'A key kept in this browser, backed up by 24 words',
+      onclick: open,
+    })
+  )
 }
 
 // No WebAuthn at all: in-app browsers, old ones. A passkey is not worth offering there.

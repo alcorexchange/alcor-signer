@@ -272,8 +272,8 @@ export function chip(text, paths, tone = '') {
   return el('span', { className: `chip ${tone}`.trim() }, [paths ? icon(paths, 11) : null, el('span', { textContent: text })])
 }
 
-export const choice = ({ icon: paths, tone = '', title, sub, onclick }) =>
-  el('button', { className: 'choice', type: 'button', onclick }, [
+export const choice = ({ icon: paths, tone = '', title, sub, onclick, className = '' }) =>
+  el('button', { className: `choice ${className}`.trim(), type: 'button', onclick }, [
     el('div', { className: `tile-icon ${tone}`.trim() }, [icon(paths, 17)]),
     el('div', { className: 'tile-body' }, [
       el('div', { className: 'choice-title', textContent: title }),
@@ -281,6 +281,10 @@ export const choice = ({ icon: paths, tone = '', title, sub, onclick }) =>
     ]),
     el('span', { className: 'choice-go' }, [icon(ICONS.chevron, 15)]),
   ])
+
+// A second way on after something failed: a framed choice, so it reads as a path and
+// not as a footnote under the error.
+export const detour = (options) => choice({ ...options, className: 'detour' })
 
 /** @param {[unknown, string, (() => Node)?][]} items — value, label, icon */
 export function segmented(items, current, onpick, { disabled = false, tip } = {}) {
