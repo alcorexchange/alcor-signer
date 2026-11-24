@@ -26,7 +26,8 @@ export function explain(error) {
   return { title, detail, kind: CALM.has(error?.name) ? 'info' : 'danger' }
 }
 
-const CALM = new Set(['NotAllowedError', 'AbortError'])
+// Nothing to fear in these: a closed prompt, or a device whose passkeys cannot make keys.
+const CALM = new Set(['NotAllowedError', 'AbortError', 'NoPrfError'])
 
 // Only asserts that read unambiguously. An invented explanation is worse than an unclear one.
 const EXPLAINED = [

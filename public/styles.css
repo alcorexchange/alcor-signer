@@ -323,7 +323,7 @@ button.back:hover:not(:disabled) { background: var(--card-bg-hover); color: var(
 
 .tile-body { flex: 1; min-width: 0; }
 .tile-title { font-size: 13px; font-weight: 500; letter-spacing: -0.01em; }
-.tile-sub { margin-top: 2px; font-size: 11.5px; line-height: 1.45; color: var(--text-muted); overflow-wrap: anywhere; }
+.tile-sub { margin-top: 2px; font-size: 12px; line-height: 1.45; color: var(--text-muted); overflow-wrap: anywhere; }
 .tile-aside { flex: none; display: flex; align-items: center; gap: 8px; color: var(--text-muted); }
 
 button.tile {
@@ -886,7 +886,7 @@ button.secret-copy.done { color: var(--primary); border-color: var(--primary-lin
   color: var(--text);
   user-select: all;
 }
-.word-grid li::marker { color: var(--text-faint); font-size: 10.5px; }
+.word-grid li::marker { color: var(--text-muted); font-size: 11px; }
 .word-grid .word { overflow-wrap: anywhere; }
 
 .secret-key {

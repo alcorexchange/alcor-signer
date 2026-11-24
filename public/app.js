@@ -91,6 +91,7 @@ import {
 import { k1PublicKey } from './k1.js'
 import {
   autoDeviceSigner,
+  addDeviceNetwork,
   deviceRoot,
   findDeviceKey,
   forgetDeviceKey,
@@ -320,7 +321,7 @@ function welcomeScreen({ created = (passkey, root) => newAccountScreen(passkey, 
           sub: 'Unlocks the way you unlock this device. Alcor never sees it',
         }),
         tile({ icon: ICONS.shield, title: `Works only on ${location.host}`, sub: 'No other site can ask it to sign' }),
-        tile({ icon: ICONS.download, title: '24 words as a backup', sub: 'Shown right after the key is made' }),
+        tile({ icon: ICONS.words, title: '24 words as a backup', sub: 'Shown right after the key is made' }),
       ]),
       out,
     ],
@@ -356,6 +357,17 @@ function forgetUnconfirmed() {
 // Said only right after making a key here: to someone with accounts, "create one again"
 // would read as "your key is gone".
 const MADE_WITHOUT_PRF = 'Pick your phone in the passkey prompt, or continue without a passkey.'
+
+// A device whose passkeys made no keys: the next sign-up here leads without a passkey,
+// rather than walking the person through two prompts that fail the same way. A flag only.
+const NO_PRF_HERE = 'alcor-vault-no-prf'
+function noPrfHere() {
+  return localStorage.getItem(NO_PRF_HERE) === '1'
+}
+function markNoPrf(on) {
+  if (on) localStorage.setItem(NO_PRF_HERE, '1')
+  else localStorage.removeItem(NO_PRF_HERE)
+}
 
 // `onFail(error)` — after the failure is on screen: a sign-up offers a key without a passkey.
 // `onState(state)` — what the same button does next, for its label: `failed` (make one
@@ -397,6 +409,7 @@ async function confirmKeyFlow(out, created, then, { words, report, onFail, onSta
     report('confirm', error)
     if (error?.name === NO_PRF) {
       unconfirmed = null
+      markNoPrf(true)
       dropCredential(created.credentialId)
       out.replaceChildren(failure(Object.assign(new Error(MADE_WITHOUT_PRF), { name: NO_PRF })))
     } else if (error?.name === 'NotAllowedError') {
@@ -428,6 +441,7 @@ async function confirmKeyFlow(out, created, then, { words, report, onFail, onSta
   }
 
   unconfirmed = null
+  markNoPrf(false)
   try {
     forgetOnHome(() => forgetRoot(root))
     const passkey = rememberPasskey({ ...created, prf: true })
@@ -582,7 +596,7 @@ function accountsSection(passkeys, devices = []) {
               // and Restore — which moves accounts — stays a quiet link, not their equal.
               ...devices.map((device) =>
                 detour({
-                  icon: ICONS.download,
+                  icon: ICONS.words,
                   tone: 'mint',
                   title: devices.length === 1 ? 'Your 24 words' : `Words of ${device.name}`,
                   sub: 'See them again and write them down',
@@ -1023,7 +1037,7 @@ function devicePanel(entry, { onState }) {
         ? []
         : [
             el('div', { className: 'level-actions' }, [
-              inlineAction('Recovery phrase', ICONS.download, () => phraseScreen(entry.device, { back: homeScreen, exportKeys: true })),
+              inlineAction('Recovery phrase', ICONS.words, () => phraseScreen(entry.device, { back: homeScreen, exportKeys: true })),
               // The words come from this key's master key: nothing to type.
               canMakePasskeys()
                 ? inlineAction('Move to a passkey', ICONS.key, () =>
@@ -1539,7 +1553,7 @@ const securitySection = (passkeys) =>
           : []
       }),
       tile({
-        icon: ICONS.download,
+        icon: ICONS.words,
         title: 'Recovery phrase',
         aside: icon(ICONS.chevron, 14),
         onclick: () => withPickedPasskey(passkeys, 'Recovery phrase', (passkey, back) => phraseScreen(passkey, { back, done: homeScreen, exportKeys: true })),
@@ -2845,6 +2859,11 @@ async function deviceKeyFlow({ out, reply, report, cancel, back = null }) {
         try {
           const kept = await keepDeviceKey(made, { chainIds: [chain.chainId], owner })
           forgetRoot(root)
+          // A passkey made but never confirmed is left behind for good: the device drops it.
+          if (unconfirmed) {
+            dropCredential(unconfirmed.credentialId)
+            forgetUnconfirmed()
+          }
           // Best effort: asks the browser not to clear the key under storage pressure.
           navigator.storage?.persist?.().catch(() => {})
           replyAndClose(reply, done, { ok: true, publicKey: kept.publicKey, credentialId: null, account: null, owner, level: null, key: 'device', wordsSaved: true })
@@ -2877,7 +2896,7 @@ function deviceKeyScreen({ reply, report, cancel }) {
         // True as written: the key is non-extractable, never sent anywhere, and bound to this origin.
         tile({ icon: ICONS.shield, tone: 'mint', title: 'Only you hold it', sub: 'Kept in this browser on this device. Alcor never sees it, and no website can read it' }),
         tile({ icon: ICONS.check, title: 'A click to sign', sub: 'No device unlock: you confirm each signature in this window' }),
-        tile({ icon: ICONS.download, title: '24 words bring it back', sub: 'Clearing this browser deletes the key, so write them down' }),
+        tile({ icon: ICONS.words, title: '24 words bring it back', sub: 'Clearing this browser deletes the key, so write them down' }),
       ]),
       out,
     ],
@@ -2974,62 +2993,123 @@ function loginScreen(incoming) {
   // window leads with it. A key synced from elsewhere is one link away; a lookup that
   // finds nothing — or was cancelled, WebAuthn does not tell them apart — leaves the
   // screen as it was, and only a real error is shown.
-  // A browser key belongs to one network: others' keys mean nothing here.
+  // Sign-in lists only this network's browser keys; a sign-up takes any (`browserKey`).
   const deviceKeys = loadDeviceKeys().filter((device) => servesNetwork(device, chain.chainId))
-  const browserKey = (back) => deviceKeyFlow({ out, reply, report, cancel, back })
+  const keysHere = loadDeviceKeys()
 
-  if (create && !passkeys.length && !deviceKeys.length && !canMakePasskeys()) {
+  if (create && !passkeys.length && !keysHere.length && !canMakePasskeys()) {
     deviceKeyScreen({ reply, report, cancel })
     return
   }
 
-  if (create && !passkeys.length && !deviceKeys.length) {
-    // Any passkey failure here offers the key in this browser: the person came to make an
-    // account, and the passkey is what stood in the way.
-    const offer = () => offerWithoutPasskey(out, () => browserKey(again))
+  if (create && !passkeys.length && !keysHere.length) {
     // The screen follows what the button does next: after a failed try it tries again;
     // with a passkey made but not confirmed it confirms that one, and "I already have a
-    // passkey" gives way to "Make a new passkey instead"; where this device's passkeys
-    // cannot make keys, the same prompt is opened for another device — a phone by its code.
-    const LABEL = { fresh: 'Create a passkey', failed: 'Try again', pending: 'Confirm the passkey', noprf: 'Use another device' }
-    const intro = state({
-      icon: ICONS.key,
-      title: `New ${chain.name} account`,
-      tagline: TAGLINE,
-      text: 'Your key is a passkey, unlocked the way you unlock this device. Alcor never sees it.',
-    })
-    const findLink = [
-      'I already have a passkey',
-      () =>
-        findKeyFlow(out, added, {
-          ownerOn,
-          report,
-          onFail: (error) =>
-            out.replaceChildren(error?.name === 'NotAllowedError' ? note('No passkey came back. New here? Create one.') : failure(error)),
-        }),
-    ]
-    const makeNewLink = [
-      'Make a new passkey instead',
-      () => {
-        forgetUnconfirmed()
-        out.replaceChildren()
-        draw('fresh')
-      },
-    ]
-    const go = button(LABEL.fresh, () => createNew({ onFail: offer, onState: draw, resetLink: false }), 'primary')
-    function draw(next) {
-      go.textContent = LABEL[next]
-      screen({ body: [intro, out], actions: [go], links: [next === 'pending' ? makeNewLink : findLink, cancel] })
+    // passkey" gives way to "Make a new passkey instead". Where this device's passkeys
+    // cannot make keys — now or on an earlier try (`noPrfHere`) — the key in this browser
+    // leads, calmly: nothing is wrong, and a phone's passkey stays one link away.
+    const LABEL = { fresh: 'Create a passkey', failed: 'Try again', pending: 'Confirm the passkey', noprf: 'Continue without a passkey' }
+    const TEXT = {
+      passkey: 'Your key is a passkey, unlocked the way you unlock this device. Alcor never sees it.',
+      noprf: 'Passkeys on this device can’t make Alcor Signer keys. Keep the key in this browser, backed up by 24 words — or use a passkey on your phone.',
     }
-    draw('fresh')
+    let current = 'fresh'
+    // Any other passkey failure offers the key in this browser too: the person came to
+    // make an account, and the passkey is what stood in the way.
+    const offer = () => {
+      if (current !== 'noprf') offerWithoutPasskey(out, () => browserKey(again))
+    }
+    const tryPasskey = () => createNew({ onFail: offer, onState: draw, resetLink: false })
+    const links = {
+      find: [
+        'I already have a passkey',
+        () =>
+          findKeyFlow(out, added, {
+            ownerOn,
+            report,
+            onFail: (error) =>
+              out.replaceChildren(error?.name === 'NotAllowedError' ? note('No passkey came back. New here? Create one.') : failure(error)),
+          }),
+      ],
+      makeNew: [
+        'Make a new passkey instead',
+        () => {
+          forgetUnconfirmed()
+          out.replaceChildren()
+          draw('fresh')
+        },
+      ],
+      phone: ['Use a passkey on my phone', tryPasskey],
+    }
+    const go = button(LABEL.fresh, () => (current === 'noprf' ? browserKey(again) : tryPasskey()), 'primary')
+    function draw(next) {
+      current = next
+      go.textContent = LABEL[next]
+      const noPrf = next === 'noprf'
+      if (noPrf) out.replaceChildren()
+      screen({
+        body: [state({ icon: noPrf ? ICONS.lock : ICONS.key, title: `New ${chain.name} account`, tagline: TAGLINE, text: noPrf ? TEXT.noprf : TEXT.passkey }), out],
+        actions: [go],
+        links: [{ pending: links.makeNew, noprf: links.phone }[next] ?? links.find, cancel],
+      })
+    }
+    draw(noPrfHere() ? 'noprf' : 'fresh')
     report('signup')
     return
   }
 
-  // A browser key with no account yet, on a sign-up: the same keys go back — its words
-  // were shown when it was made — and no new words, no new key.
-  const sameBrowserKey = (device) =>
-    replyAndClose(reply, out, { ok: true, publicKey: device.publicKey, credentialId: null, account: null, owner: device.owner, level: null, key: 'device', wordsSaved: true })
+  // A sign-up with a key already in this browser goes on with it: one key per browser, so
+  // one set of 24 words for every network. A new key is made only when each key here has
+  // an account on this network already. `back` — the sign-up screen this came from.
+  async function browserKey(back) {
+    const newest = [...keysHere].sort((a, b) => b.createdAt - a.createdAt)
+    if (!newest.length) return deviceKeyFlow({ out, reply, report, cancel, back })
+    report('device')
+
+    const intro = state({
+      icon: ICONS.lock,
+      title: `New ${chain.name} account`,
+      tagline: 'This browser already has your key',
+      text: 'It was made here earlier, with its 24 words. The same words cover this account — nothing new to write down.',
+    })
+    screen({ body: [intro, status('Checking the key')], links: [cancel] })
+    // A node that did not answer: this network's keys count as taken, never as free.
+    const used = deviceKeys.length
+      ? await deviceAccountsOn(chain).then(
+          (found) => new Set(found.map((entry) => entry.device.publicKey)),
+          () => new Set(deviceKeys.map((device) => device.publicKey))
+        )
+      : new Set()
+    const free = newest.find((device) => !used.has(device.publicKey))
+    if (!free) return back ? deviceKeyFlow({ out, reply, report, cancel, back }) : listAccounts()
+
+    screen({
+      body: [intro, out],
+      actions: [button('Continue with this browser key', () => withBrowserKey(free), 'primary')],
+      links: [...(back ? [['Back to passkey', back]] : []), cancel],
+    })
+  }
+
+  // The owner differs per network (`ownerPath`): it comes from the key's master key, here.
+  async function withBrowserKey(device) {
+    let root = null
+    try {
+      root = await deviceRoot(device.publicKey)
+      const owner = ownerPublicKey(root, chain, 0)
+      await addDeviceNetwork(device.publicKey, chain.chainId, owner)
+      replyAndClose(reply, out, { ok: true, publicKey: device.publicKey, credentialId: null, account: null, owner, level: null, key: 'device', wordsSaved: true })
+    } catch (error) {
+      out.replaceChildren(failure(error))
+    } finally {
+      forgetRoot(root)
+    }
+  }
+
+  // Signed up before in this browser without a passkey: the sign-up goes on with that key.
+  if (create && !passkeys.length) {
+    browserKey(null)
+    return
+  }
 
   // No key cached here — usually a new device the passkey synced to, so lead with
   // signing in and offer a new key only if none came back. WebAuthn doesn't tell
@@ -3148,31 +3228,6 @@ function loginScreen(incoming) {
       links: [cancel],
     })
 
-  // Signed up before in this browser without a passkey, and the account is not open yet:
-  // the sign-up goes on with that key, no list to read. A key with an account goes to the list.
-  if (create && !passkeys.length) {
-    const intro = state({
-      icon: ICONS.lock,
-      title: `New ${chain.name} account`,
-      tagline: 'This browser already has your key',
-      text: 'It was made here earlier, with its 24 words. Continue with it — nothing new to write down.',
-    })
-    screen({ body: [intro, status('Checking the key')], links: [cancel] })
-    deviceAccountsOn(chain).then(
-      (found) => {
-        const used = new Set(found.map((entry) => entry.device.publicKey))
-        const free = deviceKeys.filter((device) => !used.has(device.publicKey)).sort((a, b) => b.createdAt - a.createdAt)
-        if (!free.length) return listAccounts()
-        screen({
-          body: [intro, out],
-          actions: [button('Continue with this browser key', () => sameBrowserKey(free[0]), 'primary')],
-          links: [cancel],
-        })
-      },
-      () => listAccounts()
-    )
-    return
-  }
   listAccounts()
 
   function listAccounts() {
@@ -3196,7 +3251,7 @@ function loginScreen(incoming) {
               ),
               // A sign-in has nothing to do with a key that has no account: the row says so and is not a button.
               ...devices.map((device) =>
-                pick({ face: avatar(null), title: 'No account yet', sub: `Key in this browser ${shortKey(device.publicKey)}`, onclick: create ? () => sameBrowserKey(device) : undefined })
+                pick({ face: avatar(null), title: 'No account yet', sub: `It opens with your first deposit in ${from}`, onclick: create ? () => withBrowserKey(device) : undefined })
               ),
             ]
           )
@@ -4305,7 +4360,7 @@ function settingsScreen({ request, reply }) {
             section('security', [
               options([
                 tile({
-                  icon: ICONS.download,
+                  icon: ICONS.words,
                   title: 'Recovery phrase',
                   sub: entry.device ? 'The way back in if this browser is cleared' : 'The way back in if you lose this passkey',
                   aside: icon(ICONS.chevron, 14),

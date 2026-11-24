@@ -12,10 +12,11 @@
 //
 // IndexedDB is the source of truth. localStorage keeps a public copy of the list so
 // screens can read it synchronously, like the passkey list (`keys.js`), rebuilt from
-// IndexedDB at start (`refreshDeviceKeys`). A key serves the networks in `chainIds`: one
-// for a sign-up, every network a restore moved. Auto lives on the record, as for fast sign
-// keys — no key, no Auto — and names its account (`autoFor`): the iframe decides with no
-// network, so it cannot ask the chain which account a key is for.
+// IndexedDB at start (`refreshDeviceKeys`). A key serves the networks in `chainIds`: each
+// network a sign-up here added (`addDeviceNetwork`), every network a restore moved. Auto
+// lives on the record, as for fast sign keys — no key, no Auto — and names its account
+// (`autoFor`): the iframe decides with no network, so it cannot ask the chain which
+// account a key is for.
 
 import { openDatabase, transaction } from './idb.js'
 import { ROOT_SALT, rootFromSecret } from './root.js'
@@ -92,6 +93,29 @@ export async function keepDeviceKey(made, { chainIds, owner, owners = [owner] })
   await tx('readwrite', (store) => store.put(record, made.publicKey))
   saveList([...loadDeviceKeys().filter((entry) => entry.publicKey !== made.publicKey), record])
   return publicPart(record)
+}
+
+// One key per browser: a sign-up on another network takes the key already here, so the
+// same 24 words cover every network's account. The owner differs per network (`ownerPath`).
+/** @returns {Promise<DeviceKey>} */
+export async function addDeviceNetwork(publicKey, chainId, owner) {
+  const record = await tx('readwrite', (store) => {
+    const request = store.get(publicKey)
+    request.onsuccess = () => {
+      const found = request.result
+      if (!found) return
+      const next = {
+        ...found,
+        chainIds: [...new Set([...found.chainIds, chainId])],
+        owners: [...new Set([...(found.owners ?? [found.owner]), owner])],
+      }
+      store.put(next, publicKey)
+    }
+    return request
+  })
+  if (!record) throw new Error('This browser key is not in this browser')
+  await refreshDeviceKeys()
+  return findDeviceKey(publicKey)
 }
 
 const autoId = (chainId, account) => `${chainId}:${account}`

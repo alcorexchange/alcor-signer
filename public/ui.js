@@ -61,9 +61,10 @@ export const ICONS = {
   plug: ['M9 3v6', 'M15 3v6', 'M6 9h12v3a6 6 0 0 1-12 0V9z', 'M12 18v3'],
   ban: ['M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18z', 'M6 6l12 12'],
   swap: ['M4 8h14', 'M15 5l3 3-3 3', 'M20 16H6', 'M9 13l-3 3 3 3'],
-  download: ['M12 3v12', 'M7 11l5 5 5-5', 'M4 21h16'],
   copy: ['M9 9h11v11H9z', 'M5 15H4V4h11v1'],
   eye: ['M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7-10-7-10-7z', 'M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z'],
+  info: ['M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18z', 'M12 11v5', 'M12 8h.01'],
+  words: ['M5 4h14v16H5z', 'M8 8h8', 'M8 12h8', 'M8 16h5'],
 }
 
 const logomark = () => el('img', { className: 'brand-mark', src: './signer-mark.svg', alt: '' })
@@ -217,9 +218,11 @@ export function mono(value, { copy = true } = {}) {
 
 const shorten = (value) => (value.length > 26 ? `${value.slice(0, 14)}…${value.slice(-8)}` : value)
 
+const BANNER_ICON = { danger: ICONS.alert, warn: ICONS.alert, info: ICONS.info, ok: ICONS.check }
+
 export const banner = (kind, text) =>
   el('div', { className: `banner ${kind}` }, [
-    icon(kind === 'danger' || kind === 'warn' ? ICONS.alert : ICONS.check, 15),
+    icon(BANNER_ICON[kind], 15),
     el('span', { textContent: text }),
   ])
 
@@ -763,7 +766,7 @@ export function checkbox(label, onchange, { checked = false, sub, aside } = {}) 
 // The node's exact message is never hidden: `explain` doesn't cover every assert, and then it is the only clue.
 export function errorBox(title, detail, kind = 'danger') {
   return el('div', { className: `banner ${kind}` }, [
-    icon(ICONS.alert, 15),
+    icon(BANNER_ICON[kind], 15),
     el('div', {}, [
       el('div', { textContent: title }),
       detail && detail !== title ? el('div', { className: 'banner-detail', textContent: detail }) : null,

@@ -8,7 +8,7 @@ const named = (name, message = name) => Object.assign(new Error(message), { name
 // The window's pieces as plain records: what `out` shows is what the person sees.
 function fakes(overrides = {}) {
   const shown = []
-  const calls = { make: 0, root: [], remembered: [], dropped: [], reported: [], then: [] }
+  const calls = { make: 0, root: [], remembered: [], dropped: [], reported: [], then: [], noPrfHere: [] }
   const out = { replaceChildren: (...nodes) => shown.push(nodes) }
   const dependencies = {
     prompting: false,
@@ -39,6 +39,7 @@ function fakes(overrides = {}) {
       return passkey
     },
     dropCredential: (id) => calls.dropped.push(id),
+    markNoPrf: (on) => calls.noPrfHere.push(on),
     ...overrides(calls),
   }
   const flows = appFunctions(['createKeyFlow', 'confirmKeyFlow', 'forgetUnconfirmed'], dependencies)
@@ -75,6 +76,15 @@ test('sign-up: a passkey without PRF is dropped, never remembered', async () => 
   assert.deepEqual(calls.then, [])
   assert.deepEqual(plain(last()), [{ failure: NO_PRF }])
   assert.deepEqual(calls.reported, ['create', 'confirm', `confirm:${NO_PRF}`])
+  // The next sign-up in this browser leads without a passkey.
+  assert.deepEqual(calls.noPrfHere, [true])
+})
+
+test('sign-up: a key that confirms clears the remembered no-PRF', async () => {
+  const { flows, calls, out, report, then } = fakes(() => ({}))
+  await flows.createKeyFlow(out, then, { words: false, report })
+  assert.deepEqual(calls.noPrfHere, [false])
+  assert.deepEqual(calls.then, ['PUB_WA_test'])
 })
 
 test('sign-up: after a cancelled second prompt the same button confirms that key, it does not make another', async () => {
