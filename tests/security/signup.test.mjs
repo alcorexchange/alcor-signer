@@ -89,7 +89,7 @@ test('sign-up: after a cancelled second prompt the same button confirms that key
 
   assert.deepEqual(calls.remembered, [])
   assert.deepEqual(calls.dropped, [])
-  assert.match(last().find((node) => node.note).note, /same button/)
+  assert.match(last().find((node) => node.note).note, /Confirm it once more/)
 
   refuse = false
   await flows.createKeyFlow(out, then, { words: false, report })
@@ -142,6 +142,28 @@ test('sign-up: a key without PRF is not offered again', async () => {
   await flows.createKeyFlow(out, then, { words: false, report })
   assert.equal(calls.make, 2)
   assert.deepEqual(calls.dropped, ['cred-1', 'cred-1'])
+})
+
+test('sign-up: the button says what it does next', async () => {
+  const states = []
+  const onState = (state) => states.push(state)
+
+  const cancelledFirst = fakes(() => ({ makePasskey: async () => { throw named('NotAllowedError') } }))
+  await cancelledFirst.flows.createKeyFlow(cancelledFirst.out, cancelledFirst.then, { words: false, report: cancelledFirst.report, onState })
+  assert.deepEqual(states, ['failed'])
+
+  states.length = 0
+  const second = cancelledOnce()
+  await second.flows.createKeyFlow(second.out, second.then, { words: false, report: second.report, onState })
+  assert.deepEqual(states, ['pending'])
+  const makeNew = second.last().find((node) => node.el === 'action-links').children[0]
+  await makeNew.onclick()
+  assert.deepEqual(states, ['pending', 'fresh'])
+
+  states.length = 0
+  const noPrf = fakes(() => ({ rootFromPasskey: async () => { throw named(NO_PRF) } }))
+  await noPrf.flows.createKeyFlow(noPrf.out, noPrf.then, { words: false, report: noPrf.report, onState })
+  assert.deepEqual(states, ['failed'])
 })
 
 test('sign-up: a cancelled first prompt leaves nothing to confirm', async () => {

@@ -357,10 +357,12 @@ const MADE_WITHOUT_PRF =
   'such as your phone by scanning the code. Or update this device.'
 
 // `onFail(error)` — after the failure is on screen: a sign-up offers a key without a passkey.
-async function createKeyFlow(out, then, { words = true, report = () => {}, onFail = () => {} } = {}) {
+// `onState(state)` — what the same button does next, for its label: `failed` (make one
+// again), `pending` (confirm the one already made), `fresh` (nothing made yet).
+async function createKeyFlow(out, then, { words = true, report = () => {}, onFail = () => {}, onState = () => {} } = {}) {
   if (prompting) return
   if (unconfirmed && findPasskey(unconfirmed.publicKey)) unconfirmed = null
-  if (unconfirmed) return confirmKeyFlow(out, unconfirmed, then, { words, report, onFail })
+  if (unconfirmed) return confirmKeyFlow(out, unconfirmed, then, { words, report, onFail, onState })
   prompting = true
   report('create')
   out.replaceChildren(status('Creating the key — confirm with your passkey'))
@@ -370,16 +372,17 @@ async function createKeyFlow(out, then, { words = true, report = () => {}, onFai
   } catch (error) {
     report('create', error)
     out.replaceChildren(failure(error))
+    onState('failed')
     onFail(error)
     return
   } finally {
     prompting = false
   }
-  return confirmKeyFlow(out, unconfirmed, then, { words, report, onFail })
+  return confirmKeyFlow(out, unconfirmed, then, { words, report, onFail, onState })
 }
 
 // The second prompt. One without PRF never works here, so the device is asked to drop it.
-async function confirmKeyFlow(out, created, then, { words, report, onFail }) {
+async function confirmKeyFlow(out, created, then, { words, report, onFail, onState }) {
   if (prompting) return
   prompting = true
   report('confirm')
@@ -398,11 +401,12 @@ async function confirmKeyFlow(out, created, then, { words, report, onFail }) {
       // The key may sit on a phone that is gone: a new one stays one click away.
       out.replaceChildren(
         failure(error),
-        note('Your new passkey is made. Press the same button again to confirm it — no second passkey is made.'),
+        note('Your new passkey is made. Confirm it once more to finish — no second passkey is made.'),
         el('div', { className: 'action-links' }, [
           button('Make a new passkey instead', () => {
             unconfirmed = null
             out.replaceChildren()
+            onState('fresh')
           }),
         ])
       )
@@ -410,6 +414,7 @@ async function confirmKeyFlow(out, created, then, { words, report, onFail }) {
       unconfirmed = null
       out.replaceChildren(failure(error))
     }
+    onState(unconfirmed ? 'pending' : 'failed')
     onFail(error)
     return
   } finally {
@@ -2940,6 +2945,10 @@ function loginScreen(incoming) {
     // Any passkey failure here offers the key in this browser: the person came to make an
     // account, and the passkey is what stood in the way.
     const offer = () => offerWithoutPasskey(out, () => browserKey(again))
+    // The button says what it does now: after a failed try it tries again, after a cancelled
+    // confirmation it confirms the passkey already made.
+    const LABEL = { fresh: 'Create a passkey', failed: 'Try again', pending: 'Confirm the passkey' }
+    const go = button(LABEL.fresh, () => createNew({ onFail: offer, onState: (state) => (go.textContent = LABEL[state]) }), 'primary')
     screen({
       body: [
         state({
@@ -2950,7 +2959,7 @@ function loginScreen(incoming) {
         }),
         out,
       ],
-      actions: [button('Create a passkey', () => createNew({ onFail: offer }), 'primary')],
+      actions: [go],
       links: [
         [
           'I already have a passkey',
