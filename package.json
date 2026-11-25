@@ -1,6 +1,7 @@
 {
   "name": "alcor-signer",
   "private": true,
+  "license": "BUSL-1.1",
   "type": "module",
   "description": "Alcor Signer — the signing origin (sign.alcor.exchange): passkeys, keys and transaction signing for Alcor apps",
   "scripts": {

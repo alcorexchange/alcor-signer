@@ -1,12 +1,111 @@
+# Alcor Signer
+
+A passkey wallet for Antelope networks (Telos, WAX, XPR Network, Vaulta), live at
+[sign.alcor.exchange](https://sign.alcor.exchange). It is a separate origin that
+holds the keys and signs transactions, so the app that asks for a signature never
+holds a key. Static files only: no backend, no build step, no third-party code.
+What it does and how it protects people: [`public/llms.txt`](public/llms.txt).
+
+## License
+
+[Business Source License 1.1](LICENSE). You may read, copy, modify and run the code
+for anything that is not production use: local development, testing, integrating
+your site, security research. Serving real users with this code or a modified copy
+needs a commercial license from Alcor Exchange. Each version becomes
+GPL-2.0-or-later four years after it is published (this one on 2030-11-26 at the
+latest). The Alcor name and logo are not licensed.
+
+The WharfKit plugin that sites use to talk to the Signer is a separate package under
+BSD-3-Clause: production use there is fine.
+
+## Integrating a site
+
+Your site talks to the Signer through the WharfKit plugin
+[`@alcorexchange/wallet-plugin-alcor-signer`](https://github.com/alcorexchange/wallet-plugin-alcor-signer).
+The production Signer answers only the exact origins on its list, and `localhost` is
+not on it. Develop against a local Signer:
+
+**1. Run the Signer.** You need Node 20+ and [mkcert](https://github.com/FiloSottile/mkcert);
+there is nothing to install. HTTPS is required: passkeys and the Signer itself refuse
+anything else.
+
+```sh
+git clone https://github.com/alcorexchange/alcor-signer && cd alcor-signer
+mkcert -install
+mkdir -p .certs
+mkcert -cert-file .certs/sign.localhost.pem -key-file .certs/sign.localhost-key.pem sign.localhost
+yarn dev        # or: node serve.mjs  →  https://sign.localhost:8443
+```
+
+Chrome and Firefox resolve `*.localhost` by themselves, no `/etc/hosts` needed.
+
+**2. Serve your site on exactly `https://localhost:4000`.** That is the one partner
+origin the local Signer accepts (`ENVIRONMENTS.dev.partners` in `public/chain.js`).
+`http://`, `127.0.0.1`, `[::1]` or another port is a different origin, and the Signer
+does not answer it: the window opens, and the plugin waits until it times out. A certificate for
+your site: `mkcert localhost`. For example, with Vite:
+
+```js
+server: { port: 4000, strictPort: true, https: { cert: 'localhost.pem', key: 'localhost-key.pem' } }
+```
+
+**3. Point the plugin at the local Signer.**
+
+```ts
+import { SIGNER_ORIGINS, WalletPluginAlcorSigner } from '@alcorexchange/wallet-plugin-alcor-signer'
+
+new WalletPluginAlcorSigner({ signerOrigin: SIGNER_ORIGINS.development })
+```
+
+**4. Get an account into the local Signer.** A partner site cannot create accounts.
+Open `https://sign.localhost:8443` directly, press "Create a passkey", then
+"Import wallet" and bring an account you already have ("Link from your wallet" or
+"Import with a private key").
+
+> **The local Signer works on mainnets.** There is no testnet: every signature is a
+> real transaction. Use a throwaway account with a small balance, and keep its
+> original key on it. A passkey made on `sign.localhost` works only there, not on
+> `sign.alcor.exchange`, and is gone with your local setup.
+
+**What a partner site can do:** `login` (sign in to an existing account), `sign` and
+`prove` (Sign-In with Antelope). It gets the Signer window only: no Auto sign, no
+embedded frame, no sign-up, backup or settings. Screens show "not an Alcor site".
+The Signer does not pay CPU or NET for partners. The plugin sends its protocol
+version, and the window refuses another one with a screen that says to update the
+plugin. More in the plugin's README.
+
+**Going live:** send Alcor the exact origins of your site (`https://` + host + port if
+any, no wildcards), for example in an issue here. Once they are in
+`ENVIRONMENTS.prod.partners`, the plugin works with its default options against
+`sign.alcor.exchange`.
+
+## Working on the Signer itself
+
+The rest of this README, `CLAUDE.md` (rules and the checklist for every diff) and
+`docs/` are in Russian. Before a pull request:
+
+```sh
+yarn test               # tests/security, offline, no dependencies
+yarn headers --check    # public/_headers matches headers.mjs
+yarn abis --check       # pinned ABI hashes match the networks
+```
+
+`master` deploys to `sign.alcor.exchange` as it is: there is no build.
+
+**Security issues:** report them privately (Security → Report a vulnerability on
+GitHub), not in a public issue.
+
+---
+
 # sign — подписывающий origin Alcor
 
-Прототип. Отдельный сайт, который держит ключи и подписывает транзакции, чтобы
+Отдельный сайт, который держит ключи и подписывает транзакции, чтобы
 торговое приложение не могло этого делать само.
 
 ```
 app    https://localhost:3000      Nuxt, запускает пользователь
 sign   https://sign.localhost:8443 статика, `yarn dev`
-прод   sign.alcor.exchange         домен выбран, ещё не поднят
+прод   https://sign.alcor.exchange
 ```
 
 Схема ключей, корня и восстановления — `docs/adr/ADR-0010-alcor-sign-keys.md`;
