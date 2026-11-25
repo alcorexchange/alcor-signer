@@ -91,7 +91,7 @@ yarn headers --check    # public/_headers matches headers.mjs
 yarn abis --check       # pinned ABI hashes match the networks
 ```
 
-`master` deploys to `sign.alcor.exchange` as it is: there is no build.
+`sign.alcor.exchange` is deployed by Alcor from a private copy of this repo, as it is: there is no build. A pull request here is reviewed and carried over by hand.
 
 **Security issues:** report them privately (Security → Report a vulnerability on
 GitHub), not in a public issue.
@@ -369,7 +369,7 @@ on its own domain `sign.alcor.exchange`, with no `*.workers.dev` and no version 
 A separate project, not the app's: the app's build with its thousand packages must
 have no access to the vault's files.
 
-Workers Builds, connected to GitHub, deploys `master`:
+Workers Builds, connected to Alcor's private copy of this repo on GitHub, deploys its `master`:
 
 | setting | value |
 |---|---|
