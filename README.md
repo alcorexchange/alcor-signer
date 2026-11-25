@@ -81,8 +81,9 @@ any, no wildcards), for example in an issue here. Once they are in
 
 ## Working on the Signer itself
 
-The rest of this README, `CLAUDE.md` (rules and the checklist for every diff) and
-`docs/` are in Russian. Before a pull request:
+The rest of this README is how the Signer works and what to know before touching it.
+`CLAUDE.md` (rules and the checklist for every diff) and `docs/` are in Russian.
+Before a pull request:
 
 ```sh
 yarn test               # tests/security, offline, no dependencies
@@ -97,509 +98,519 @@ GitHub), not in a public issue.
 
 ---
 
-# sign — подписывающий origin Alcor
+# Internals
 
-Отдельный сайт, который держит ключи и подписывает транзакции, чтобы
-торговое приложение не могло этого делать само.
+A separate site that holds the keys and signs transactions, so the trading app
+cannot do it by itself.
 
 ```
-app    https://localhost:3000      Nuxt, запускает пользователь
-sign   https://sign.localhost:8443 статика, `yarn dev`
-прод   https://sign.alcor.exchange
+app    https://localhost:3000      Nuxt, run by the developer
+sign   https://sign.localhost:8443 static files, `yarn dev`
+prod   https://sign.alcor.exchange
 ```
 
-Схема ключей, корня и восстановления — `docs/adr/ADR-0010-alcor-sign-keys.md`;
-что из неё сделано, а что нет — таблица в конце ADR.
+The scheme of keys, root and recovery: `docs/adr/ADR-0010-alcor-sign-keys.md`;
+what of it is done and what is not, in the table at the end of the ADR.
 
-Проектный документ — `docs/VAULT_TODO.md` (там «vault», это то же самое: vault —
-компонент, sign — его адрес). Здесь — состояние кода и то, что нужно знать,
-прежде чем его трогать.
+The design document is `docs/VAULT_TODO.md` (it says "vault", which is the same
+thing: vault is the component, sign is its address). This file is the state of the
+code and what to know before touching it.
 
 ---
 
-## Сети
+## Networks
 
-`chain.js` — реестр, а не одна сеть. App называет сеть по имени (`telos`,
-`xpr`), параметры vault берёт у себя: принимать RPC и `chain_id` снаружи
-нельзя, подменяемый endpoint означает подпись под чем угодно. Незнакомое имя —
-отказ, а не молчаливый откат к дефолту: это была бы подпись не в той сети,
-которую человек видел на экране.
+`chain.js` is a registry, not one network. The app names a network (`telos`,
+`xpr`), and the vault takes its parameters from its own list: RPC and `chain_id`
+must never be taken from outside, because a swappable endpoint means a signature
+under anything. An unknown name is a refusal, not a silent fallback to the default:
+that would be a signature on a network other than the one the person saw on screen.
 
-Сеть зовётся `xpr`. `proton` остался в двух местах и только там: адрес ноды
-(`proton.greymass.com` — старый endpoint) и алиас имени, потому что app держит
-её `domainId: 'proton'`, а переименовывать его пришлось бы вместе с identity,
-сессиями и резолвом venue во всём приложении. Так же Vaulta: в реестре
-`vaulta`, app зовёт её `eos` (алиас), ноды — `eos.*`.
+The network is called `xpr`. `proton` remains in two places only: the node address
+(`proton.greymass.com`, the old endpoint) and a name alias, because the app keeps
+its `domainId: 'proton'`, and renaming it would mean renaming identity, sessions and
+venue resolution across the whole app. Vaulta likewise: `vaulta` in the registry,
+the app calls it `eos` (alias), the nodes are `eos.*`.
 
-Внутри семейства `antelope` один passkey годится всем сетям — rpid проверяется
-по origin, а не по чейну. Поэтому ключ, заведённый для Telos, работает и на XPR
-без всякой миграции.
+Within the `antelope` family one passkey fits every network: the rpid is checked
+against the origin, not the chain. So a key made for Telos works on XPR too, with no
+migration.
 
-`family` в записи сети — про то, как устроена подпись. Семейства с другой кривой
-(EVM — secp256k1, Solana — ed25519) passkey подписать не может в принципе: им
-нужен ключ, выведенный из корня (`root.js`, ADR-0010 §9: те же 24 слова, путь
-`m/44'/60'/0'/0/0`). Появятся они в том же реестре, но со своим адаптером сборки
-транзакции — и с другой моделью безопасности, которую придётся назвать в UI
-честно: нативный passkey не существует вне Secure Enclave, выведенный ключ живёт
-в памяти на момент подписи.
+`family` in a network entry is about how signing works. Families on another curve
+(EVM is secp256k1, Solana is ed25519) cannot be signed by a passkey at all: they need
+a key derived from the root (`root.js`, ADR-0010 §9: the same 24 words, path
+`m/44'/60'/0'/0/0`). They will appear in the same registry, with their own
+transaction adapter, and with a different security model that the UI will have to
+name honestly: a native passkey never exists outside the Secure Enclave, while a
+derived key lives in memory while it signs.
 
-Главный экран открыт руками, и сети ему никто не называет — аккаунт под ключом
-ищется во всех сразу (`accountsEverywhere`). Лежащая нода одной сети при этом
-пропускается: она не повод сказать человеку, что аккаунтов у него нет.
+The home screen is opened by hand, and nobody names a network to it: accounts under
+the key are looked up on all of them at once (`accountsEverywhere`). A network whose
+node is down is skipped: it is no reason to tell the person they have no accounts.
 
-У каждой сети несколько узлов (`rpcs`), и запросы перебирают их по порядку до
-первого ответа. Это не про отказоустойчивость вообще, а про конкретный случай:
-`proton.greymass.com` вырезается блокировщиками по фильтрам на Proton Mail/VPN,
-и в браузере это выглядит как «Failed to fetch» на ровном месте — при том, что
-из curl тот же адрес отвечает.
+Each network has several nodes (`rpcs`), and requests try them in order until the
+first answer. This is not about fault tolerance in general but a specific case:
+`proton.greymass.com` is cut by blockers through their Proton Mail/VPN filters, and
+in the browser it looks like "Failed to fetch" out of nowhere, while the same address
+answers from curl.
 
-**Отправка транзакции перебирает узлы иначе, чем чтение.** Первый узел мог
-принять транзакцию и не успеть ответить — тогда второй честно скажет
-`duplicate`. Это успех, а не отказ, поэтому `pushTransaction` ловит его и
-возвращает id, посчитанный локально из тела транзакции.
+**Pushing a transaction tries nodes differently from reading.** The first node may
+have accepted the transaction and failed to answer; then the second honestly says
+`duplicate`. Only the id computed locally from the transaction body counts, and a key
+change is done only when nodes that agree show it applied (`submitWith`,
+`confirmApplied`): one node's word for success is not enough.
 
-## Зачем два origin
+## Why two origins
 
-`PUB_WA_` хранит внутри себя rpid, и чейн сверяет его с хостом из
-`clientDataJSON`. Значит XSS на `localhost:3000` **не может** получить ассерт для
-ключа, созданного на `sign.localhost`: браузер просто не найдёт подходящий
-credential. Это отказ на уровне API, а не эвристика — и это единственное, ради
-чего вся конструкция существует.
+`PUB_WA_` carries the rpid inside it, and the chain checks it against the host in
+`clientDataJSON`. So an XSS on `localhost:3000` **cannot** get an assertion for a key
+made on `sign.localhost`: the browser simply finds no matching credential. This is a
+refusal at the API level, not a heuristic, and it is the one thing the whole design
+exists for.
 
-Отсюда всё остальное: sign не импортирует из app ни строчки, не собирается его
-бандлером и не делит с ним ни кук, ни домена.
-
----
-
-## Правила, которые нельзя нарушать
-
-Это не стиль, это то, что держит модель угроз. Редизайн их не касается.
-
-1. **`innerHTML` не использовать нигде.** Только `textContent`. Иконки — через
-   `createElementNS`, не строкой. Данные приходят с чейна и от app, и это
-   единственное место, где в sign может завестись XSS.
-2. **Ничего не импортировать из app.** Ни `~/`, ни относительными путями наружу.
-   Нужен кусок кода из приложения — копируется внутрь (`passkey.js` — копия
-   `lib/signers/webauthn/passkey.ts`, и это намеренно).
-3. **Свой код не собирается.** Что в гите, то и в проде. Единственная сборка —
-   разовый вендор-бандл, см. ниже.
-4. **Ничего не грузить снаружи.** Ни CDN, ни шрифтов с Google Fonts. Только
-   файлы из `public/`.
-5. **Транзакцию собирает sign, а не app.** `expiration`, TAPOS,
-   `context_free_actions: []`, `delay_sec: 0` — всё своё, со своего RPC. App
-   присылает только экшены. `chain_id` — из реестра `chain.js`; нода, которая
-   ответила другим, — отказ: подпись под чужой сетью стала бы валидна там.
-6. **Смена прав по протоколу не принимается.** `assertAllowedFromApp()` отклоняет
-   `eosio::updateauth|deleteauth|linkauth|unlinkauth|canceldelay|setcode|setabi`
-   и любой экшен `eosio.msig` (чужое предложение с `updateauth` исполняется
-   нашими `approve` + `exec`) до сборки транзакции. Такие операции
-   инициируются только внутри sign.
-7. **Сессионный ключ не подписывает смену прав** — второй рубеж того же правила
-   (`requiresPasskey()`). Ключ в браузере у аккаунта без passkey — тоже сессионный:
-   смену прав за такой аккаунт подписывают только 24 слова (owner), через
-   восстановление.
-8. **Origin проверяется с обеих сторон, `'*'` не используется нигде** — ни на
-   приём, ни на отправку `postMessage`. На экране подписи стоит `event.origin`,
-   а не одноимённое поле из данных: показывать надо то, с чем браузер сверил
-   отправителя, а не то, чем он представился.
+Everything else follows: sign imports not a line from the app, is not built by its
+bundler and shares no cookies and no domain with it.
 
 ---
 
-## Заголовки
+## Rules that must not be broken
 
-`headers.mjs` — CSP, Trusted Types, `frame-ancestors` (только app, для Auto sign) и остальное.
-Дев-сервер отдаёт их на каждый ответ; **прод-хостинг обязан отдавать ровно
-их же**. Без них правило 1 держится только на ревью, с ними — на браузере:
-`require-trusted-types-for 'script'` запрещает `innerHTML` и `eval` на уровне
-API, а `connect-src` пускает только к нодам из `chain.js` (список собирается
-из реестра, руками не дублируется).
+These are not style, they are what holds the threat model. A redesign does not touch
+them.
 
-Следствия, о которых надо помнить:
+1. **No `innerHTML` anywhere.** Only `textContent`. Icons through `createElementNS`,
+   not as a string. Data comes from the chain and from the app, and this is the one
+   place where an XSS could start in sign.
+2. **Nothing is imported from the app.** Neither `~/` nor relative paths outside. A
+   piece of app code that is needed is copied in (`passkey.js` is a copy of
+   `lib/signers/webauthn/passkey.ts`, on purpose).
+3. **Our own code is not built.** What is in git is what is in production. The only
+   build is a one-off vendor bundle, see below.
+4. **Nothing is loaded from outside.** No CDN, no Google Fonts. Only files from
+   `public/`.
+5. **sign builds the transaction, not the app.** `expiration`, TAPOS,
+   `context_free_actions: []`, `delay_sec: 0`: all its own, from its own RPC. The app
+   sends only the actions. `chain_id` comes from the `chain.js` registry; a node that
+   answers with another one is a refusal: a signature under a foreign network would
+   be valid there.
+6. **Permission changes are not accepted through the protocol.**
+   `assertAllowedFromApp()` rejects
+   `eosio::updateauth|deleteauth|linkauth|unlinkauth|canceldelay|setcode|setabi` and
+   any `eosio.msig` action (someone else's proposal with `updateauth` is executed by
+   our `approve` + `exec`) before the transaction is built. Such operations start only
+   inside sign.
+7. **A session key does not sign permission changes**: the second line of the same
+   rule (`requiresPasskey()`). A browser key on an account without a passkey is a
+   session key too: permission changes for such an account are signed only by the
+   24 words (owner), through restore.
+8. **The origin is checked on both sides, and `'*'` is used nowhere**: neither when
+   receiving nor when sending `postMessage`. The signing screen shows `event.origin`,
+   not a field of the same name from the data: show what the browser checked the
+   sender against, not what the sender claims to be.
 
-- **Никаких `<style>` и `style="…"` в разметке** — `style-src 'self'`. Стили
-  только в `styles.css`; свойства через `node.style.x = …` (CSSOM) можно.
-- **Новая нода в `chain.js` сама попадает в `connect-src`**, но прод-конфиг
-  надо перегенерировать: `yarn csp` (прод) или `yarn csp dev`.
-- **Окружения — `ENVIRONMENTS` в `chain.js`.** Адрес страницы решает, с каким
-  app vault говорит: `sign.alcor.exchange` → `alcor.exchange`,
-  `sign.localhost:8443` → дев-адреса. Незнакомый адрес (preview, зеркало) не
-  говорит ни с кем. `frame-ancestors` берётся из того же списка. Пара на
-  стороне app — `VAULT_ORIGIN` в `config/vault.ts` (`import.meta.dev`).
-- **HSTS** — два года, `includeSubDomains`. Preload решается на `alcor.exchange`.
-- **COOP не ставится**: он обрывает `window.opener`, а на нём протокол с app.
+---
 
-## Язык экранов
+## Headers
 
-Одно главное действие на экран — крупной кнопкой. Всё второстепенное (отмена,
-«другой ключ») — строкой мелких ссылок под ней (`screen({ links })`). «Назад» —
-не ссылка, а стрелка в шапке перед знаком (`screen({ back })` → `chrome(back)`):
-шапка не прокручивается, а заголовок стоит по общей левой линии. Esc делает то
-же, кроме как из поля ввода.
-Отступы задаёт стопка (`main`, `stack()`), а не блоки: у компонентов нет
-внешних margin. Под тумблером пишется последствие текущего положения, а не
-название настройки (`switchRow`).
+`headers.mjs`: CSP, Trusted Types, `frame-ancestors` (the app only, for Auto sign) and
+the rest. The dev server sends them on every response; **the production host must
+send exactly the same**. Without them rule 1 rests on review alone; with them, on the
+browser: `require-trusted-types-for 'script'` forbids `innerHTML` and `eval` at the
+API level, and `connect-src` allows only the nodes from `chain.js` (the list is built
+from the registry, never duplicated by hand).
 
-## Файлы
+Consequences to keep in mind:
+
+- **No `<style>` and no `style="…"` in markup**: `style-src 'self'`. Styles live only
+  in `styles.css`; properties through `node.style.x = …` (CSSOM) are fine.
+- **A new node in `chain.js` lands in `connect-src` by itself**, but the production
+  config must be regenerated: `yarn headers`, and `yarn csp` (prod) or `yarn csp dev`
+  to look at it.
+- **Environments are `ENVIRONMENTS` in `chain.js`.** The page's address decides which
+  app the vault talks to: `sign.alcor.exchange` → `alcor.exchange`,
+  `sign.localhost:8443` → the dev addresses. An unknown address (preview, mirror)
+  talks to no one. `frame-ancestors` comes from the same list. The app's side of the
+  pair is `VAULT_ORIGIN` in `config/vault.ts` (`import.meta.dev`).
+- **HSTS**: two years, `includeSubDomains`. Preload is decided on `alcor.exchange`.
+- **No COOP**: it cuts `window.opener`, and the protocol with the app runs on it.
+
+## Screen language
+
+One main action per screen, as a large button. Everything secondary (cancel,
+"another key") is a row of small links under it (`screen({ links })`). "Back" is not a
+link but an arrow in the header before the mark (`screen({ back })` → `chrome(back)`):
+the header does not scroll, and the title sits on the common left line. Esc does the
+same, except from an input field.
+Spacing comes from the stack (`main`, `stack()`), not from blocks: components have no
+outer margin. Under a toggle goes the consequence of its current position, not the
+name of the setting (`switchRow`).
+
+## Files
 
 ```
-serve.mjs            https-сервер над public/, ноль зависимостей
-headers.mjs          CSP, Trusted Types и прочие заголовки — для дева и прода
-vendor/entry.js      что именно берётся из wharfkit — поимённо
-vendor/build.sh      разовая сборка бандла
-vendor/HASH          версии + sha256 собранного файла
-.certs/              mkcert, в .gitignore
+serve.mjs            https server over public/, zero dependencies
+headers.mjs          CSP, Trusted Types and the other headers, for dev and prod
+vendor/entry.js      what exactly is taken from wharfkit, by name
+vendor/build.sh      the one-off bundle build
+vendor/HASH          versions + sha256 of the built file
+.certs/              mkcert, in .gitignore
 
 public/
-  index.html         разметка-скелет
-  styles.css         ВСЕ стили: токены, ритм отступов, компоненты
-  signer-mark.svg    знак Alcor Signer: кристалл Alcor с замком
-  chains/            логотипы сетей, путь в реестре (`chain.logo`)
-  llms.txt           что такое Signer — для LLM; интеграцию допишем с плагином WharfKit
-  ui.js              кирпичики интерфейса: el, card, tile, state, toggle, banner…
-  app.js             экраны и их состав
-  chain.js           реестр сетей и список разрешённых origin приложения
-  errors.js          разбор ответа ноды: из details достаётся причина
-  format.js          числа на экране: разряды через запятую, баланс коротко
-  cache.js           кеш главной (аккаунты, балансы, уровни) — только публичное
-  protocol.js        приём запроса от app (половина sign)
-  passkey.js         создание ключа, подпись passkey, PRF-секрет
-  root.js            корень: PRF → 24 слова (BIP-39) → owner-ключи по путям (BIP-32/44)
-  session.js         горячие ключи из PRF по областям: IndexedDB, WebCrypto → SIG_R1_
-  device.js          ключ в браузере у аккаунта без passkey: WebCrypto, неизвлекаемый, IndexedDB
-  idb.js             IndexedDB в два вызова: открыть базу, транзакция до коммита
-  discover.js        новое устройство: PUB_WA_ из подписи ассерта, аккаунты по чейну
-  webauthn.js        ответ passkey → PUB_WA_ / SIG_WA_ (p256 из @noble/curves, свой CBOR)
-  k1.js              подпись и публичный ключ K1 (secp256k1 из @noble/curves)
-  message.js         доказательство аккаунта: поля, текст CAIP-122, digest с префиксом
-  sign.js            сборка, подпись, отправка; экшены обратно из транзакции
-  summary.js         сводка экрана подписи: декодер на каждый контракт, склейка
-  vendor/wharfkit.js собранный бандл — руками не править
+  index.html         skeleton markup
+  styles.css         ALL styles: tokens, spacing rhythm, components
+  signer-mark.svg    the Alcor Signer mark: the Alcor crystal with a lock
+  chains/            network logos, path in the registry (`chain.logo`)
+  llms.txt           what the Signer is, for LLMs
+  ui.js              interface bricks: el, card, tile, state, toggle, banner…
+  app.js             screens and what is on them
+  chain.js           network registry and the allowed app origins
+  errors.js          reading a node's answer: the reason is taken from details
+  format.js          numbers on screen: thousands separators, short balances
+  cache.js           home cache (accounts, balances, levels), public data only
+  protocol.js        receiving a request from the app (sign's half)
+  passkey.js         key creation, passkey signature, PRF secret
+  root.js            root: PRF → 24 words (BIP-39) → owner keys by path (BIP-32/44)
+  session.js         hot keys from PRF per scope: IndexedDB, WebCrypto → SIG_R1_
+  device.js          browser key for an account without a passkey: WebCrypto, non-extractable, IndexedDB
+  idb.js             IndexedDB in two calls: open the database, a transaction until commit
+  discover.js        new device: PUB_WA_ from the assertion's signature, accounts from the chain
+  webauthn.js        passkey answer → PUB_WA_ / SIG_WA_ (p256 from @noble/curves, own CBOR)
+  k1.js              K1 signature and public key (secp256k1 from @noble/curves)
+  message.js         account proof: fields, CAIP-122 text, prefixed digest
+  sign.js            build, sign, push; actions back out of the transaction
+  summary.js         signing screen summary: a decoder per contract, merging
+  vendor/wharfkit.js the built bundle, never edit by hand
 ```
 
-### Сторона app
+### The app's side
 
-App живёт в отдельном репо (`perps_ui`), связь с ним — только протокол
-postMessage (`protocol.js`) и адрес `VAULT_ORIGIN` в `config/vault.ts` app.
-Файлы там:
+The app lives in a separate repo (`perps_ui`); the only link to it is the postMessage
+protocol (`protocol.js`) and the `VAULT_ORIGIN` address in the app's
+`config/vault.ts`. Files there:
 
 ```
-lib/vault/popup.ts                     окно и невидимый iframe: login, enroll, import, sign, settings, level
-lib/vault/sessions.ts                  запомненные входы (только публичное) — переживают рефреш
-lib/vault/authority.ts                 чтение rpid из PUB_WA_, ключ на permission
-lib/signers/VaultSigner.ts             подписант поверх окна
+lib/vault/popup.ts                     window and invisible iframe: login, enroll, import, sign, settings, level
+lib/vault/sessions.ts                  remembered sign-ins (public data only), survive a refresh
+lib/vault/authority.ts                 reading the rpid from PUB_WA_, the key on a permission
+lib/signers/VaultSigner.ts             signer on top of the window
 composables/wallet-providers/VaultProvider.ts
-composables/useVaultSigning.ts         режим подписи в меню аккаунта (только чтение + окно)
-composables/useVaultEnrollment.ts      предложение привязать кошелёк к Alcor Signer
+composables/useVaultSigning.ts         signing mode in the account menu (read only + window)
+composables/useVaultEnrollment.ts      offer to link a wallet to Alcor Signer
 components/modals/VaultEnrollModal.vue
-config/vault.ts                        VAULT_ORIGIN и сети
-utils/antelopeError.ts                 то же, что errors.js, но для приложения
+config/vault.ts                        VAULT_ORIGIN and networks
+utils/antelopeError.ts                 the same as errors.js, for the app
 ```
 
-Меняешь протокол — меняешь обе стороны в одном заходе: версий у протокола
-нет, старое окно с новым app не договорится.
+Change the protocol, change both sides in one go: the Alcor protocol has no versions,
+an old window will not agree with a new app.
 
-Регистрация (`login` + `create: true`) по дороге шлёт app `vault:progress` с тем же
-`reqId`: `step` (`signup`, `create`, `confirm`, `find`, `device`, `words`) и, если окно passkey этого шага
-не прошло, `webauthn` — имя ошибки из списка (`NotAllowedError`, `NoPrfError`, `InvalidStateError`,
-`NotSupportedError`, `SecurityError`, `AbortError`, иначе `other`). Больше ничего: ни
-ключей, ни credentialId, ни текста ошибок (`signupProgress` в `app.js`). Закрытое окно
-ответа не шлёт, поэтому последний шаг app кладёт рядом с причиной остановки
-(`vaultProgress` в `popup.ts`), а воронка — в `window_step` и `webauthn_error`.
-`confirm` + `NoPrfError` (ключ только что создан и не годится) app читает и сам: вместо
-«попробуйте ещё» говорит про другое устройство.
+Sign-up (`login` + `create: true`) sends the app `vault:progress` on the way, with the
+same `reqId`: `step` (`signup`, `create`, `confirm`, `find`, `device`, `words`) and, if
+that step's passkey prompt failed, `webauthn`, an error name from a list
+(`NotAllowedError`, `NoPrfError`, `InvalidStateError`, `NotSupportedError`,
+`SecurityError`, `AbortError`, otherwise `other`). Nothing more: no keys, no
+credentialId, no error text (`signupProgress` in `app.js`). A closed window sends no
+answer, so the app keeps the last step next to the reason it stopped (`vaultProgress`
+in `popup.ts`), and the funnel gets `window_step` and `webauthn_error`. `confirm` +
+`NoPrfError` (the key was just made and is no good) the app reads by itself: instead
+of "try again" it talks about another device.
 
-Предложение привязать кошелёк открывается само один раз на браузер — при
-первом аккаунте, которому есть что предложить (`alcor.vault.enroll.shown`).
-Дальше висит напоминанием в меню аккаунта. Гаснет, когда на permission
-появляется ключ с нашим rpid.
+The offer to link a wallet opens by itself once per browser, on the first account
+that has something to offer (`alcor.vault.enroll.shown`). After that it stays as a
+reminder in the account menu. It goes away when a key with our rpid appears on the
+permission.
 
-### Чужие сайты (партнёры)
+### Other sites (partners)
 
-Другие dApp подключаются плагином WharfKit — отдельный репо
-`wallet-plugin-alcor-signer`, пакет `@alcorexchange/wallet-plugin-alcor-signer`.
-Сайт пускаем только по списку: `partners` в `ENVIRONMENTS` (`chain.js`), точные
-origin, без масок. Партнёр получает меньше, чем Alcor:
+Other dApps connect through the WharfKit plugin: a separate repo,
+`wallet-plugin-alcor-signer`, package `@alcorexchange/wallet-plugin-alcor-signer`.
+A site gets in only by the list: `partners` in `ENVIRONMENTS` (`chain.js`), exact
+origins, no wildcards. A partner gets less than Alcor:
 
-- **Только окно.** В `frame-ancestors` его нет (`headers.mjs` берёт `apps`), а
-  `serveEmbedded` слушает только `apps` — значит, нет Auto sign и чтения режима.
-- **Только `login` (без `create`), `sign` и `prove`** — `partnerRefusal` в `protocol.js`.
-  Регистрация, бэкап, привязка, импорт, настройки — сценарии Alcor. `prove` у
-  партнёра безопасен: его origin входит в подписанный текст, для Alcor такая
-  подпись не годится.
-- **Версия протокола.** Плагин живёт на npm отдельно от деплоя Signer и шлёт
-  `version`; другая — отказ с понятным экраном. Меняешь протокол для партнёров —
-  поднимай `PARTNER_PROTOCOL` и `PROTOCOL_VERSION` в плагине вместе.
-- **Режим подписи из его окна не меняется**: выбора режима нет, Fast не
-  предлагается. Включённый Fast работает — кнопкой в окне. Auto в окне партнёра
-  не срабатывает.
-- **На экранах входа и подписи** — строка «not an Alcor site».
-- **CPU** партнёр платит сам. `cpu.alcor noop` Signer распознаёт как раньше: оплату
-  CPU партнёрам можно сделать продуктом, но со-подпись даёт сервис cpu-payer, не Signer.
+- **Window only.** It is not in `frame-ancestors` (`headers.mjs` takes `apps`), and
+  `serveEmbedded` listens only to `apps`: so no Auto sign and no reading of the mode.
+- **Only `login` (without `create`), `sign` and `prove`**: `partnerRefusal` in
+  `protocol.js`. Sign-up, backup, linking, import, settings are Alcor's flows. `prove`
+  is safe for a partner: its origin is part of the signed text, so the signature is
+  no good for Alcor.
+- **Protocol version.** The plugin lives on npm apart from the Signer's deploys and
+  sends `version`; another one is a refusal with a clear screen. Change the partner
+  protocol, raise `PARTNER_PROTOCOL` and the plugin's `PROTOCOL_VERSION` together.
+- **The signing mode does not change from its window**: there is no mode choice, Fast
+  is not offered. Fast that is on works, by the button in the window. Auto does not
+  fire in a partner's window.
+- **Sign-in and signing screens** carry the line "not an Alcor site".
+- **CPU** is paid by the partner. `cpu.alcor noop` is recognised as before: paying CPU
+  for partners could become a product, but the co-signature comes from the cpu-payer
+  service, not from the Signer.
 
-Всё остальное — как для Alcor: `assertAllowedFromApp`, `requiresPasskey`, сети
-только из реестра, транзакцию собирает Signer.
+Everything else is as for Alcor: `assertAllowedFromApp`, `requiresPasskey`, networks
+only from the registry, the Signer builds the transaction.
 
-### Запуск
+### Running
 
 ```bash
 yarn dev                 # https://sign.localhost:8443
-yarn csp [dev]           # CSP окружения, по умолчанию прод
-yarn abis [--check]      # закрепить хеши ABI / сверить их (для деплоя)
-yarn headers [--check]   # public/_headers для Cloudflare из headers.mjs
-yarn vendor              # пересобрать вендор-бандл и vendor/HASH
-yarn test                # tests/security: что не пускает запрос в подпись и что снимается с аккаунта
+yarn csp [dev]           # the environment's CSP, prod by default
+yarn abis [--check]      # pin ABI hashes / check them (for deploys)
+yarn headers [--check]   # public/_headers for Cloudflare, from headers.mjs
+yarn vendor              # rebuild the vendor bundle and vendor/HASH
+yarn test                # tests/security: what keeps a request out of signing and what is taken off an account
 ```
 
-Тесты офлайн: ноды подменены, ключи сгенерированы. Приватные функции `app.js`
-берутся из исходника как есть (`tests/security/harness.mjs`), с явными заглушками
-зависимостей — `app.js` ради тестов ничего не экспортирует.
+Tests are offline: nodes are faked, keys are generated. Private functions of `app.js`
+are taken from the source as is (`tests/security/harness.mjs`), with explicit stubs for
+its dependencies: `app.js` exports nothing for the sake of tests.
 
-### Деплой
+### Deploy
 
-Cloudflare Worker без кода — только статика из `public/` (`wrangler.jsonc`),
-на своём домене `sign.alcor.exchange`, без `*.workers.dev` и адресов версий.
-Отдельный проект, не тот же, что у app: сборка app с её тысячей пакетов не
-должна иметь доступа к файлам vault.
+A Cloudflare Worker with no code, only static files from `public/` (`wrangler.jsonc`),
+on its own domain `sign.alcor.exchange`, with no `*.workers.dev` and no version URLs.
+A separate project, not the app's: the app's build with its thousand packages must
+have no access to the vault's files.
 
-Workers Builds, подключённый к GitHub, выкатывает `master`:
+Workers Builds, connected to GitHub, deploys `master`:
 
-| настройка | значение |
+| setting | value |
 |---|---|
-| ветка | `master`, сборки других веток выключены |
-| build command | пусто |
+| branch | `master`, builds of other branches off |
+| build command | empty |
 | deploy command | `npx wrangler@4.133.0 deploy` |
 | build variable | `SKIP_DEPENDENCY_INSTALL=1` |
 
-Сборки нет и `node_modules` в деплое нет намеренно: выкатывается ровно то, что
-лежит в гите, и код из npm не может поправить файлы перед заливкой.
+No build and no `node_modules` in the deploy, on purpose: exactly what is in git ships,
+and code from npm gets no chance to touch the files before upload.
 
-Заголовки прод берёт из `public/_headers` — он генерируется из `headers.mjs`
-(`yarn headers`, коммитится; `yarn headers --check` сверяет). Поменял
-`headers.mjs` или ноду в `chain.js` — `yarn headers` и коммит.
+Production takes its headers from `public/_headers`, generated from `headers.mjs`
+(`yarn headers`, committed; `yarn headers --check` compares). Changed `headers.mjs` or
+a node in `chain.js`: `yarn headers` and commit.
 
-Откат — Deployments → Rollback в дашборде Worker'а, мгновенно.
+Rollback: Deployments → Rollback in the Worker's dashboard, instant.
 
 ### ABI
 
-Vault берёт ABI с ноды сырыми байтами (`get_raw_abi`) и сверяет sha256 с
-закреплённым в `public/abis.js` — это тот же `abi_hash`, что хранит чейн.
-Закреплены `eosio`, системный токен, контракты Alcor и плательщик CPU;
-`yarn abis` пишет хеш, только если все ноды сети согласны.
+The vault takes an ABI from the node as raw bytes (`get_raw_abi`) and checks its
+sha256 against the one pinned in `public/abis.js`: the same `abi_hash` the chain keeps.
+Pinned are `eosio`, the system token, Alcor's contracts and the CPU payer; `yarn abis`
+writes a hash only if every node of the network agrees.
 
-ABI, который не совпал с закреплённым или не закреплён вовсе (любой токен),
-должна подтвердить вторая нода тем же хешем (`confirmAbi` в `sign.js`) — иначе
-отказ. ABI решает, какие байты значат «получатель», и одна врущая нода
-переставила бы поля. Сами ABI в код не зашиты намеренно: после настоящего
-обновления контракта зашитый ABI закодировал бы данные по старой раскладке, а
-контракт прочитал бы их по новой.
+An ABI that does not match the pinned one or is not pinned at all (any token) must be
+confirmed by a second node with the same hash (`confirmAbi` in `sign.js`), otherwise
+it is a refusal. The ABI decides which bytes mean "recipient", and one lying node
+would move the fields around. The ABIs themselves are not baked into the code on
+purpose: after a real contract update a baked ABI would encode data by the old layout,
+and the contract would read it by the new one.
 
-Хеш разошёлся, но вторая нода его подтвердила (значит, контракт обновили и не
-перезакрепили) — подпись не падает: на экране плашка, человек читает и решает
-сам. Auto sign такое без окна не подписывает. То, что vault запускает сам
-(`submitWith`: Fast sign, импорт, отвязка), подписывает: отказ запер бы человека
-и не дал бы снять украденный ключ после каждого обновления системного
-контракта. Незакреплённые токены ещё и сверяются по форме `transfer`
-(from, to, quantity, memo). **Обновил контракт — `yarn abis` и коммит.**
+The hash differs but a second node confirms it (so the contract was updated and not
+re-pinned): signing does not fail; the screen shows a banner, and the person reads and
+decides. Auto sign does not sign that without the window. What the vault starts by
+itself (`submitWith`: Fast sign, import, unlinking) it signs: a refusal would lock the
+person in and keep them from removing a stolen key after every system contract
+update. Unpinned tokens are also checked against the shape of `transfer` (from, to,
+quantity, memo). **Updated a contract: `yarn abis` and commit.**
 
-Зависимостей у запуска нет — `node_modules` нужен только для пересборки
-вендор-бандла. Сертификат кладётся в `.certs/` (в гит не идёт):
+Running needs no dependencies: `node_modules` is needed only to rebuild the vendor
+bundle. The certificate goes into `.certs/` (not in git):
 
 ```bash
 mkcert -cert-file .certs/sign.localhost.pem -key-file .certs/sign.localhost-key.pem sign.localhost
 ```
 
-Сертификат локальный (`mkcert`), CA уже в системе. **https обязателен**:
-`webauthn.js` отказывается строить ключ с любого другого протокола
-(`WebAuthn keys require https`), так что «просто http на localhost» не работает,
-хотя браузер passkey и создаст.
+The certificate is local (`mkcert`), with its CA in the system. **https is required**:
+`webauthn.js` refuses to build a key from any other protocol
+(`WebAuthn keys require https`), so "just http on localhost" does not work, even though
+the browser will create the passkey.
 
-### Вендор-бандл
+### Vendor bundle
 
-`@wharfkit/antelope` тянет CommonJS-зависимости (`elliptic`, `bn.js`,
-`hash.js`, `brorand`), которые браузер нативным `import` не съест. Поэтому один
-раз прогоняется esbuild, а результат коммитится:
+`@wharfkit/antelope` pulls CommonJS dependencies (`elliptic`, `bn.js`, `hash.js`,
+`brorand`) that the browser's native `import` cannot take. So esbuild runs once, and
+the result is committed:
 
 ```bash
-yarn vendor    # перепроверка: собрать заново и сверить с vendor/HASH
+yarn vendor    # recheck: build again and compare with vendor/HASH
 ```
 
-В деплое сборка не запускается. Апгрейд wharfkit — единственный повод трогать.
+The deploy runs no build. A wharfkit upgrade is the only reason to touch it.
 
-**Секреты — только через `@noble/curves`.** `elliptic` в бандле остаётся, потому
-что без него нет antelope, но у него открытая уязвимость подписи
-(GHSA-848j-6mx2-7j84). Поэтому подпись K1 и публичный ключ из приватного — в
-`k1.js` на `secp256k1`, passkey → `PUB_WA_`/`SIG_WA_` — в `webauthn.js` на
-`p256`. `elliptic` видит только публичное: восстановление ключа из подписи,
-разбор. `PrivateKey.signDigest()` и `.toPublic()` в vault не вызываются.
+**Secrets only through `@noble/curves`.** `elliptic` stays in the bundle because
+antelope needs it, but it has an open signing vulnerability (GHSA-848j-6mx2-7j84). So
+the K1 signature and the public key from a private one live in `k1.js` on `secp256k1`,
+and passkey → `PUB_WA_`/`SIG_WA_` in `webauthn.js` on `p256`. `elliptic` sees only
+public data: recovering a key from a signature, parsing. `PrivateKey.signDigest()` and
+`.toPublic()` are never called in the vault.
 
 ---
 
-## Экраны
+## Screens
 
-`app.js` решает, какой экран показать, по тому, как страницу открыли.
+`app.js` decides which screen to show by how the page was opened.
 
-| Как открыт | Экран | Что на нём |
+| How it was opened | Screen | What is on it |
 |---|---|---|
-| руками | `homeScreen` | аккаунты во всех сетях, сгруппированные по сети (логотип и имя сети над карточкой; строка: аватар, имя, баланс, метка «Fast» / «Auto»; клик раскрывает уровень подписи Passkey / Fast / Auto и действия «Replace browser key», «Remove passkey»), «Import wallet», «Security», свёрнутые технические подробности; всё сначала из кеша (`cache.js`), чейн сверяет молча |
-| «Add» | `addAccountScreen` | три пути: привязать кошелёк (`linkGuideScreen` → app), импорт приватным ключом, новый аккаунт |
-| руками, ключа ещё нет | `welcomeScreen` | два ответа одного размера: «Create a passkey» и «I already have a passkey» (системный выбор: этот Mac, синхронизированный, телефон) — сайт не видит, есть ли ключ, а лишний пустой passkey в новом браузере путает сильнее лишнего выбора; ссылки «Restore with 24 words» и «Import with a private key» (сначала новый passkey со словами, потом импорт). Для `kind: 'import'` без ключей — тот же экран без ссылок, оба ответа ведут в импорт |
-| создание ключа | `createKeyFlow` → `wordsScreen` | два касания passkey (ключ, PRF корня), 24 слова, «Copy» + «I saved it» |
-| после создания | `newAccountScreen` | owner и active для ручного создания аккаунта в каждой сети; после первого ключа в браузере (`firstKey`) — ссылка «Already have accounts? Use another passkey»: у кого аккаунты были, тот не примет новый пустой ключ за пропажу. Тот же выбор — последним пунктом в пустом списке аккаунтов на главной (`addChoices`, `otherPasskey`) |
-| «Recovery phrase» | `withPickedPasskey` → `phraseScreen` | при нескольких passkey — сначала выбор ключа (имя и его аккаунты); слова по касанию passkey; какие аккаунты они вернут; поставить слова на owner, где можно |
-| «Import with a private key» | `importScreen` → `importConfirm` | сеть сегментами, ключ; аккаунты галками, тумблеры «Fast sign» и «Remove the old key» (§6a) |
-| «Private key» (Recovery phrase на главной и в окне `settings`, у аккаунта с галкой) | `coverageSection` | ключ аккаунта из 24 слов в WIF (`5…`) для Anchor и cleos: выводится заново из уже показанных слов, без второго касания, приватная половина зануляется сразу. Аккаунт не из слов — кнопки нет. Passkey и Fast sign ключ не экспортируются никогда. Слова на этом экране уже показаны, ключ из них ничего не добавляет; в бэкапе, который просит app (`kind: 'backup'`), кнопки нет (`exportKeys`) |
-| «Replace passkey» | `withPickedPasskey` → `replaceKeyScreen` | при нескольких passkey — сначала выбор ключа; экран называет заменяемый ключ, его аккаунты и порядок окон passkey; новый ключ и новые слова, переезд аккаунтов этого ключа (§8) |
-| «Restore with recovery phrase» | `restoreScreen` | 24 слова → аккаунты → кто ещё имеет доступ (ноды согласны): снимаемые ключи браузера (`PUB_R1_`) списком, прочие permissions — галками «Remove», по умолчанию выключены → новый ключ → переезд (§8). Доступ поменялся после экрана — этот аккаунт не переезжает |
-| из app, `kind: 'login'` | `loginScreen` | выбор аккаунта, другой passkey (любой ключ этого origin, не только с другого устройства), создание; до ответа показывает, кто ещё держит аккаунт (`whoElseControls`), кроме того, что человек видел и оставил при импорте (`keptAtImport`: старый ключ, если не снят, и «also has access»); отдаёт публичный ключ, выбранный аккаунт и его режим подписи, ничего не подписывает |
-| из app, `kind: 'enroll'` | `enrollScreen` | passkey для аккаунта другого кошелька; режим строкой (`modePicker`, по умолчанию Fast); отдаёт ключи, ставит их кошелёк |
-| из app, `kind: 'settings'` | `settingsScreen` | аккаунт из меню app: режим подписи (тот же `signingPanel`), слова восстановления, «All accounts» на главную; удаления passkey здесь нет намеренно; режим уходит в app при закрытии окна |
-| из app, ключ без аккаунта | `noAccountScreen` | «аккаунта нет» + ключ, которым его заводить |
-| из app, `kind: 'login'` + `create: true`, ключей на устройстве нет | `loginScreen` | «New <сеть> account»: главная — «Create a passkey», ссылка «I already have a passkey». Подпись кнопки идёт за состоянием (`onState`): после сбоя — «Try again»; ключ создан, подтверждение отменено — «Confirm the passkey», а вместо «I already have a passkey» внизу «Make a new passkey instead»; passkey устройства не дал PRF — спокойный текст без красного, главная «Continue without a passkey», ссылка «Use a passkey on my phone» (то же окно passkey, где телефон по QR). Браузер это запоминает (localStorage `alcor-vault-no-prf`, флаг без данных) и следующую регистрацию сразу начинает так же; ключ, подтверждённый с PRF, флаг снимает. Человек уже выбрал «создать» в app, и окно не ведёт его искать ключ, которого нет: системный «нет ключей» или QR в ответ на «Sign up» читался как поломка. Поиск, который ничего не вернул (или отменён — WebAuthn их не различает), оставляет тот же экран с короткой строкой. Любой сбой passkey при создании добавляет под ошибкой «Continue without a passkey» |
-| регистрация без passkey | `deviceKeyFlow` → `wordsScreen` | После сбоя passkey строка «Continue without a passkey» ведёт сразу к словам: что это такое, уже сказала сама строка, остальное — факты под словами. Экран с тремя плитками (`deviceKeyScreen`) — только в браузере без WebAuthn, где человек ещё ничего не видел. Ключ и мастер-ключ (`makeDeviceKey`) создаются в памяти, слова из мастер-ключа показываются с «Back to passkey» и Cancel; галка «I saved» — в нижней панели рядом с Continue, не под сгибом. Только после неё ключ сохраняется (`keepDeviceKey`) и app получает `ok: true, publicKey` (`PUB_R1_`), `credentialId: null`, `owner` (K1 из слов, номер 0), `key: 'device'`, `wordsSaved: true`. Закрыл окно на словах — не остаётся ничего. Повторная регистрация в той же сети отдаёт тот же ключ |
-| из app, `kind: 'login'` + `create: true`, в браузере уже есть ключ (любой сети) без аккаунта в этой | `loginScreen` | «New <сеть> account — This browser already has your key» и одна кнопка «Continue with this browser key»: ключ в браузере тот же, owner этой сети — из его мастер-ключа, новых слов нет. Тот же экран — после «Continue without a passkey», если ключ здесь уже есть |
-| из app, `kind: 'login'` + `create: true`, новый ключ | `createKeyFlow({ words: false })` | два касания passkey, без слов и без экрана ключей: сразу `ok: true, account: null`, `publicKey`, `credentialId`, `owner` (K1 из корня, номер 0), `level: null`. Слова — потом, `kind: 'backup'` |
-| из app, `kind: 'login'` + `create: true`, ключ без аккаунта | `findKeyFlow({ ownerOn })` → `handKeysScreen` | ничего не подписывает; owner выводится из корня того же касания, что нашло ключ (нода не ответила — одно касание позже, на кнопке); по кнопке отдаёт `ok: true, account: null`, `publicKey` (`PUB_WA_` → active) и `owner` (K1 из корня, первый свободный номер → owner). Аккаунт заводит app; Signer найдёт его по ключу при следующем открытии |
-| из app, `kind: 'create'` (`publicKey` — подсказка) | `createScreen` | ещё один аккаунт под passkey: человек уже вошёл в app и платит фабрике с текущего аккаунта. Ничего не подписывает; по касанию passkey выводит owner — первый свободный номер (`nextFreeIndex`), так что те же 24 слова возвращают все аккаунты ключа. Подсказка выбирает passkey по умолчанию, только если он есть на устройстве; другой — «Use a different key». Ключей на устройстве нет — найти passkey или создать новый (номер 0, без слов). Отдаёт `ok: true, account: null`, `publicKey`, `credentialId`, `owner`, `level: null` |
-| из app, `kind: 'finish'` (`account`, `publicKey`, `owner`) | `finishScreen` | первый вход в аккаунт, открытый одним owner-ключом (так открываются все депозитные адреса в WAX и XPR): digits-only memo фабрики (`contracts/account_factory`) кладёт один K1 и в owner, и в active. Ноды должны согласиться, что owner держит этот ключ; Signer выводит его из корня passkey (`ownerKeyOf`, без сети) и им подписывает `updateauth` active: + passkey, − owner-ключ. Passkey уже на active — подписи нет. Отдаёт ответ входа (`account`, `level: 'passkey'`). Экран — «<name> is ready», кнопка «Sign in»: один клик и одно касание, проверка `onlyOurs` до подписи, ключи под Technical details |
-| из app, `kind: 'backup'` (`publicKey`) | `backupScreen` → `phraseScreen({ confirm: true })` | слова для passkey с этим ключом (на устройстве — иначе отказ): по касанию, «Done» только после галки «I saved these words somewhere safe». Ничего не подписывает; отдаёт `ok: true` без слов; закрыть / Cancel — отказ |
-| из app, `kind: 'renameSign'` (`publicKey`, `owner`, `address`, `from`, `to`) | `renameScreen` | подпись owner-ключом под переименованием депозитного адреса (см. «Переименование депозитного адреса»): ни транзакции, ни смены ключей. Отдаёт `account`, `expires`, `signature`. Партнёрам — отказ |
-| из app, `kind: 'sign'` | `confirmScreen` | сводка, подписант, режим подписи строкой, по клику — три режима с пояснениями (`modePicker`; действует со следующей подписи), кнопки |
-| из app, но запрос не дошёл | `timeoutScreen` | список разрешённых origin |
-| из app, прислали смену прав | отказ | экран «Отклонено», подпись невозможна |
+| by hand | `homeScreen` | accounts on every network, grouped by network (network logo and name above the card; a row: avatar, name, balance, a "Fast" / "Auto" label; a click opens the signing level Passkey / Fast / Auto and the actions "Replace browser key", "Remove passkey"), "Import wallet", "Security", folded technical details; everything from the cache first (`cache.js`), the chain checks quietly |
+| "Add" | `addAccountScreen` | three ways: link a wallet (`linkGuideScreen` → app), import with a private key, a new account |
+| by hand, no key yet | `welcomeScreen` | two answers of one size: "Create a passkey" and "I already have a passkey" (the system picker: this Mac, synced, phone): the site cannot see whether a key exists, and an extra empty passkey in a new browser confuses more than an extra choice; links "Restore with 24 words" and "Import with a private key" (a new passkey with words first, then the import). For `kind: 'import'` with no keys, the same screen without links, both answers lead to the import |
+| key creation | `createKeyFlow` → `wordsScreen` | two passkey touches (the key, the root's PRF), 24 words, "Copy" + "I saved it" |
+| after creation | `newAccountScreen` | owner and active for creating an account by hand on each network; after the first key in the browser (`firstKey`), the link "Already have accounts? Use another passkey": someone who had accounts will not take a new empty key for a loss. The same choice is the last item in an empty account list on the home screen (`addChoices`, `otherPasskey`) |
+| "Recovery phrase" | `withPickedPasskey` → `phraseScreen` | with several passkeys, a key choice first (name and its accounts); the words by a passkey touch; which accounts they bring back; put the words on owner where possible |
+| "Import with a private key" | `importScreen` → `importConfirm` | network as segments, the key; accounts as checkboxes, toggles "Fast sign" and "Remove the old key" (§6a) |
+| "Private key" (Recovery phrase on home and in the `settings` window, on a ticked account) | `coverageSection` | the account's key from the 24 words in WIF (`5…`) for Anchor and cleos: derived again from the words already shown, with no second touch, the private half wiped at once. An account not from the words has no button. The passkey and the Fast sign key are never exported. The words are already shown on this screen, a key from them adds nothing; the backup the app asks for (`kind: 'backup'`) has no button (`exportKeys`) |
+| "Replace passkey" | `withPickedPasskey` → `replaceKeyScreen` | with several passkeys, a key choice first; the screen names the key being replaced, its accounts and the order of passkey prompts; a new key and new words, moving this key's accounts (§8) |
+| "Restore with recovery phrase" | `restoreScreen` | 24 words → accounts → who else has access (nodes agree): browser keys to remove (`PUB_R1_`) as a list, other permissions as "Remove" checkboxes, off by default → a new key → the move (§8). Access changed after the screen: that account does not move |
+| from the app, `kind: 'login'` | `loginScreen` | account choice, another passkey (any key of this origin, not only from another device), creation; before answering it shows who else holds the account (`whoElseControls`), except what the person saw and kept at import (`keptAtImport`: the old key if not removed, and "also has access"); hands out the public key, the chosen account and its signing mode, signs nothing |
+| from the app, `kind: 'enroll'` | `enrollScreen` | a passkey for an account of another wallet; the mode as a row (`modePicker`, Fast by default); hands out the keys, their wallet sets them |
+| from the app, `kind: 'settings'` | `settingsScreen` | the account from the app's menu: signing mode (the same `signingPanel`), recovery words, "All accounts" to home; no passkey removal here, on purpose; the mode goes to the app when the window closes |
+| from the app, a key with no account | `noAccountScreen` | "no account" + the key to open it with |
+| from the app, `kind: 'login'` + `create: true`, no keys on the device | `loginScreen` | "New <network> account": the main button "Create a passkey", the link "I already have a passkey". The button's label follows the state (`onState`): after a failure "Try again"; key made, confirmation cancelled: "Confirm the passkey", and instead of "I already have a passkey" at the bottom, "Make a new passkey instead"; the device's passkey gave no PRF: calm text without red, the main button "Continue without a passkey", the link "Use a passkey on my phone" (the same passkey prompt, where the phone is by QR). The browser remembers it (localStorage `alcor-vault-no-prf`, a flag with no data) and starts the next sign-up the same way; a key confirmed with PRF clears the flag. The person already chose "create" in the app, and the window does not send them looking for a key that does not exist: the system's "no keys" or a QR in answer to "Sign up" read as broken. A search that returned nothing (or was cancelled: WebAuthn does not tell them apart) leaves the same screen with a short line. Any passkey failure during creation adds "Continue without a passkey" under the error |
+| sign-up without a passkey | `deviceKeyFlow` → `wordsScreen` | After a passkey failure the row "Continue without a passkey" leads straight to the words: the row itself already said what it is, the rest are facts under the words. The screen with three tiles (`deviceKeyScreen`) appears only in a browser without WebAuthn, where the person has seen nothing yet. The key and the master key (`makeDeviceKey`) are made in memory, the words from the master key are shown with "Back to passkey" and Cancel; the "I saved" tick sits in the bottom panel next to Continue, not below the fold. Only after it the key is kept (`keepDeviceKey`) and the app gets `ok: true, publicKey` (`PUB_R1_`), `credentialId: null`, `owner` (K1 from the words, index 0), `key: 'device'`, `wordsSaved: true`. Closed the window on the words: nothing is left. A second sign-up on the same network hands out the same key |
+| from the app, `kind: 'login'` + `create: true`, the browser already has a key (any network) with no account on this one | `loginScreen` | "New <network> account — This browser already has your key" and one button, "Continue with this browser key": the browser key is the same, this network's owner comes from its master key, no new words. The same screen after "Continue without a passkey" if a key is already here |
+| from the app, `kind: 'login'` + `create: true`, a new key | `createKeyFlow({ words: false })` | two passkey touches, no words and no keys screen: straight `ok: true, account: null`, `publicKey`, `credentialId`, `owner` (K1 from the root, index 0), `level: null`. The words come later, `kind: 'backup'` |
+| from the app, `kind: 'login'` + `create: true`, a key with no account | `findKeyFlow({ ownerOn })` → `handKeysScreen` | signs nothing; owner is derived from the root of the same touch that found the key (node did not answer: one touch later, on the button); the button hands out `ok: true, account: null`, `publicKey` (`PUB_WA_` → active) and `owner` (K1 from the root, the first free index → owner). The app opens the account; the Signer finds it by the key next time |
+| from the app, `kind: 'create'` (`publicKey` is a hint) | `createScreen` | one more account under the passkey: the person is already signed in to the app and pays the factory from the current account. Signs nothing; on a passkey touch it derives owner at the first free index (`nextFreeIndex`), so the same 24 words bring back every account of the key. The hint picks the default passkey only if it is on the device; another one through "Use a different key". No keys on the device: find a passkey or create a new one (index 0, no words). Hands out `ok: true, account: null`, `publicKey`, `credentialId`, `owner`, `level: null` |
+| from the app, `kind: 'finish'` (`account`, `publicKey`, `owner`) | `finishScreen` | the first sign-in to an account opened with one owner key (every deposit address to WAX and XPR opens this way): the factory's digits-only memo (`contracts/account_factory`) puts one K1 into both owner and active. Nodes must agree that owner holds this key; the Signer derives it from the passkey's root (`ownerKeyOf`, no network) and signs `updateauth` active with it: + passkey, − owner key. Passkey already on active: no signature. Hands out the sign-in answer (`account`, `level: 'passkey'`). The screen: "<name> is ready", a "Sign in" button: one click and one touch, the `onlyOurs` check before signing, keys under Technical details |
+| from the app, `kind: 'backup'` (`publicKey`) | `backupScreen` → `phraseScreen({ confirm: true })` | the words for the passkey with this key (on the device, otherwise a refusal): by a touch, "Done" only after the tick "I saved these words somewhere safe". Signs nothing; hands out `ok: true` without the words; close / Cancel is a refusal |
+| from the app, `kind: 'renameSign'` (`publicKey`, `owner`, `address`, `from`, `to`) | `renameScreen` | an owner key's signature under a deposit address rename (see "Deposit address rename"): no transaction, no key change. Hands out `account`, `expires`, `signature`. Refused for partners |
+| from the app, `kind: 'sign'` | `confirmScreen` | summary, signer, signing mode as a row, on click the three modes with explanations (`modePicker`; takes effect from the next signature), buttons |
+| from the app, but the request never arrived | `timeoutScreen` | the list of allowed origins |
+| from the app, a permission change was sent | refusal | a "Rejected" screen, signing impossible |
 
-### Состояния, про которые забывают
+### States people forget
 
-Перед редизайном стоит увидеть каждое:
+Before a redesign, look at each one:
 
-- аккаунт ещё грузится (`…`), аккаунт не найден, RPC не ответил
-- быстрые сделки включены / выключены / проверяются
-- у ключа нет PRF (выясняется после создания), ключ создан, но второе окно passkey
-  отменили
-- подпись: ждём passkey, подписываем кнопкой или сразу (Auto), подписано, отклонено, ошибка ноды
-- в сводке: неизвестный экшен, memo не распознан, минимум на получение = 0,
-  получатель в memo не совпадает с подписывающим
+- an account is still loading (`…`), not found, the RPC did not answer
+- fast trades on / off / being checked
+- the key has no PRF (found out after creation), the key was made but the second
+  passkey prompt was cancelled
+- signing: waiting for the passkey, signing by the button or at once (Auto), signed,
+  rejected, node error
+- in the summary: an unknown action, an unrecognised memo, a minimum to receive of 0,
+  the recipient in the memo differs from the signer
 
-Последние три — самое важное на экране подписи. Они рисуются красной и жёлтой
-плашками, и **их нельзя делать тише**: авторизатор не показывает содержимое
-транзакции вообще, поэтому экран sign — единственное место, где человек может
-что-то заметить.
+The last three matter most on the signing screen. They are drawn as red and yellow
+banners, and **they must never be made quieter**: an authorizer does not show the
+transaction's content at all, so the sign screen is the only place where the person
+can notice anything.
 
 ---
 
-## Язык интерфейса
+## Interface language
 
-Пользовательский и английский — как и всё остальное в app. Человек не знает
-слов «permission», `PUB_WA_`; он знает passkey, свой аккаунт и свои деньги.
+User-facing and English, like everything else in the app. The person does not know the
+words "permission" or `PUB_WA_`; they know the passkey, their account and their money.
 
-Не «Face ID»: это только Apple (на Windows — Hello или PIN, на Android —
-отпечаток), и для DEX это звучит как «мы сканируем лицо». Слово — «passkey»,
-а там, где человек решает, доверять ли, прямо сказано: разблокирует
-устройство, Alcor биометрию не видит. Автоподпись — «Fast sign», не «Fast
-trades»: vault будут звать и другие проекты, подписывают не только сделки. Русским остаются только комментарии в коде и этот файл.
+Not "Face ID": that is Apple only (on Windows it is Hello or a PIN, on Android a
+fingerprint), and for a DEX it sounds like "we scan your face". The word is "passkey",
+and where the person decides whether to trust it, the screen says plainly: it unlocks
+the device, Alcor never sees the biometrics. Auto signing is "Fast sign", not "Fast
+trades": other projects will call the vault too, and not only trades get signed. Code
+comments and this file are in English.
 
-Это же касается строк на стороне app: `VaultProvider`, `VaultSigner` и
-`popup.ts` отдают сообщения об ошибках, и они доезжают до тостов.
+The same goes for the strings on the app's side: `VaultProvider`, `VaultSigner` and
+`popup.ts` return error messages, and they reach the toasts.
 
-| В коде | На экране |
+| In code | On screen |
 |---|---|
 | passkey / `PUB_WA_` | passkey, owner key |
-| горячий ключ / `PUB_R1_` | Fast sign, this browser |
-| `updateauth` на active | Fast sign on / off |
-| rpid, RPC, ключи | Technical details, свёрнуто |
-| корень / owner | Recovery phrase / Replace passkey в «Security»; Import — в «Add» |
+| hot key / `PUB_R1_` | Fast sign, this browser |
+| `updateauth` on active | Fast sign on / off |
+| rpid, RPC, keys | Technical details, folded |
+| root / owner | Recovery phrase / Replace passkey in "Security"; Import in "Add" |
 
-Граница называется прямо и на видном месте: **вывод и смена ключей — всегда
-Face ID**, всё остальное — кнопкой. Сами операции над ключами — в «Security» под
-списком и тише его: ими пользуются раз в жизни, а потерять аккаунт ими можно за
-один клик.
-
----
-
-## Оформление
-
-Токены Alcor скопированы значениями в `index.html` (`#161818`, мятный `#39d998`,
-`#f6fefd` / `#949e9c`, границы `#2a2a2a`, Inter + SF Mono). Именно скопированы —
-импортировать из app нельзя, см. правило 2. Расходятся редко, правятся руками.
-
-Свечений и теней нет совсем: `box-shadow` в `styles.css` не используется ни в
-каком виде, фокус — `outline: 1px` с отступом. Нет и полупрозрачных цветных
-слоёв один на другом (мятный текст на мятной подложке, штрихи с `opacity`) —
-на тёмном фоне это читается как подсветка.
-
-Раскладка: `#app` — колонка на всю высоту, скроллится только `main`; шапка и
-кнопки стоят на месте. Домен потому, что он подтверждает окно, кнопки потому,
-что «Reject» не ищут прокруткой.
-
-Попап (`popup.ts` открывает 440×720) получает эту колонку во весь экран, и
-прокручивается в нём только `main`. От 560×620 включается оконный режим:
-колонка становится карточкой с рамкой и радиусом, прижатой к верху (по центру
-она прыгала бы при каждом изменении высоты), высота — по содержимому целиком,
-без прокрутки внутри; длинный экран прокручивается страницей.
-
-Экран подписи держит одну раскладку с первого кадра: пока транзакция
-собирается, на месте сводки `skeleton`, а панель с кнопками уже стоит. Прогресс
-и «Signed» показывает сама кнопка (`signButton`, `setBusy`, `setDone`), ошибка —
-над ней. Горячей клавиши и автофокуса у кнопки подписи нет и не будет: клавиша,
-набранная для app в момент, когда окно перехватило фокус, подписала бы то, чего
-человек не видел.
-
-Слева в шапке — знак Alcor Signer (`signer-mark.svg`: кристалл одним нейтральным
-цветом, мятный только замок) и надпись ALCOR SIGNER. Справа — адрес одной строкой
-без рамки: мятный замок, регистрируемый домен ярче, поддомен тихо. Домен выделен не для красоты:
-в попапе это единственное, что отличает настоящий sign от нарисованного
-заражённой страницей.
-
-Кирпичики: `card` — не коробка, а плоский список строк прямо на фоне: ни
-заливки, ни рамки, ни разделителей; строки отделяет воздух, кликабельную —
-скруглённый ховер. Табы (`segmented`) — текстом, активный мятный. Строк две: `field` (подпись —
-значение, для технического) и `tile` (иконка, заголовок, пояснение, довесок
-справа — для всего пользовательского). `state` — экран об одном: иконка, фраза,
-объяснение. `toggle`, `pill`, `banner`, `status`, `skeleton` — остальное. `choice` — выбор
-пути крупной строкой, `segmented` — один из немногих вариантов, `chip` — метка
-в строке, `options` — плоский список запасных ходов.
-
-Пропорции — как в app: карточка 12px, кнопка и поле 8px, метка 4px. Палитра
-темнее app (фон `#111313`, мята `#34d399`) — токены в начале `styles.css`.
-Иконки без подложек. Аватар — градиент из имени аккаунта (`avatar()` в
-`ui.js`: FNV-1a + fmix32 → одна из восьми пар цветов и угол). Логотипы сетей —
-`public/chains/`, путь в реестре (`chain.logo`).
-Мята — только у главного действия, у включённого тумблера и у значков (замок,
-молния в «Fast», галка в плашке успеха); подложка под ними нейтральная.
-
-Пока значение едет с чейна, на его месте стоит `skeleton`, а не «…». Заглушка
-статичная: мерцающих поверхностей в проекте нет.
-
-Менять оформление можно свободно: `index.html` (стили), `ui.js` (кирпичики),
-состав экранов в `app.js`. Трогать при этом не нужно `protocol.js`, `session.js`,
-`sign.js` и `vendor/`.
+The boundary is named plainly and in sight: **deriving and changing keys always takes
+the passkey**, everything else a button. The key operations themselves sit in
+"Security", under the list and quieter than it: people use them once in a lifetime,
+and one click there can lose an account.
 
 ---
 
-## Что уже работает
+## Look
 
-Схема ключей — по ADR-0010.
+Alcor's tokens are copied by value into `index.html` (`#161818`, mint `#39d998`,
+`#f6fefd` / `#949e9c`, borders `#2a2a2a`, Inter + SF Mono). Copied, because importing
+from the app is not allowed, see rule 2. They rarely drift and are fixed by hand.
 
-- passkey на отдельном origin → `PUB_WA_` → аккаунт → реальный своп
-- вход в app: попап, `reqId`, `VaultSigner` находит аккаунт по ключу
-- экран подтверждения со сводкой: декодер на каждый контракт, склейка сплит-свопа
-- **корень**: PRF → 24 слова (BIP-39) → owner-ключи `m/44'/<slip44>'/<i>'/0/0`.
-  Проверено на векторе «abandon ×23 art»: EVM-путь даёт стандартный адрес
-- **горячий ключ** из PRF по области, неэкспортируемый `CryptoKey`; после
-  очистки браузера восстанавливается одним Face ID без транзакции; замена номера
-- **новое устройство**: `PUB_WA_` восстанавливается из подписи ассерта
-  (`discover.js`), аккаунты находятся по чейну — бэкенд не нужен
-- **Recovery phrase**: показ слов и постановка их на owner там, где owner
-  подписывает этот passkey
-- **импорт по приватному ключу** (§6a): owner-ключ — аккаунт становится нашим,
-  active-ключ — только Face ID и автоподпись
-- **замена ключа и восстановление по словам** (§8): переезд всех аккаунтов на
-  новый passkey и новый корень, одна транзакция на аккаунт
+No glows and no shadows at all: `box-shadow` is not used in `styles.css` in any form,
+focus is a `1px` `outline` with an offset. No translucent coloured layers on top of
+each other either (mint text on a mint backing, strokes with `opacity`): on a dark
+background it reads as a highlight.
 
-## Доказательство аккаунта (`prove`)
+Layout: `#app` is a full-height column, only `main` scrolls; the header and the buttons
+stay put. The domain, because it vouches for the window; the buttons, because nobody
+should scroll to find "Reject".
 
-App просит доказать, что человек владеет `alice@active` на этой сети, а проверяет
-кто-то третий — контракт `msgproof` или бэк (оба в `alcor-examples`). Профиль наш,
-под Antelope: поля CAIP-122 (SIWE, EIP-4361) и префикс в духе EIP-191.
+The popup (`popup.ts` opens 440×720) gets this column full screen, and only `main`
+scrolls in it. From 560×620 the window mode turns on: the column becomes a card with a
+border and radius, pinned to the top (centred, it would jump at every height change),
+its height following the whole content, with no scrolling inside; a long screen scrolls
+with the page.
+
+The signing screen keeps one layout from the first frame: while the transaction is
+being built, a `skeleton` stands in for the summary, and the panel with the buttons is
+already in place. Progress and "Signed" are shown by the button itself (`signButton`,
+`setBusy`, `setDone`), an error above it. The sign button has no hotkey and no
+autofocus, and never will: a key typed for the app at the moment the window took the
+focus would sign what the person never saw.
+
+On the left of the header is the Alcor Signer mark (`signer-mark.svg`: the crystal in
+one neutral colour, only the lock in mint) and the words ALCOR SIGNER. On the right,
+the address in one line with no border: a mint lock, the registrable domain brighter,
+the subdomain quiet. The domain is highlighted not for looks: in a popup it is the one
+thing that tells the real sign from one drawn by an infected page.
+
+Bricks: `card` is not a box but a flat list of rows right on the background: no fill,
+no border, no separators; rows are separated by air, a clickable one gets a rounded
+hover. Tabs (`segmented`) are text, the active one mint. Two kinds of rows: `field`
+(label and value, for technical things) and `tile` (icon, title, explanation, an extra
+on the right, for everything user-facing). `state` is a screen about one thing: icon,
+phrase, explanation. `toggle`, `pill`, `banner`, `status`, `skeleton` are the rest.
+`choice` is a choice of way as a large row, `segmented` one of a few options, `chip` a
+label in a row, `options` a flat list of fallbacks.
+
+Proportions as in the app: card 12px, button and field 8px, label 4px. The palette is
+darker than the app (background `#111313`, mint `#34d399`): tokens at the top of
+`styles.css`. Icons without backings. The avatar is a gradient from the account name
+(`avatar()` in `ui.js`: FNV-1a + fmix32 → one of eight colour pairs and an angle).
+Network logos are in `public/chains/`, path in the registry (`chain.logo`).
+Mint is only for the main action, a toggle that is on, and the icons (lock, the bolt in
+"Fast", the tick in a success banner); the backing under them is neutral.
+
+While a value is on its way from the chain, a `skeleton` stands in its place, not "…".
+The placeholder is static: there are no shimmering surfaces in the project.
+
+The look can be changed freely: `styles.css` (styles), `ui.js` (bricks), what is on
+the screens in `app.js`. That needs no changes to `protocol.js`, `session.js`,
+`sign.js` or `vendor/`.
+
+---
+
+## What already works
+
+The key scheme follows ADR-0010.
+
+- a passkey on a separate origin → `PUB_WA_` → an account → a real swap
+- signing in to the app: popup, `reqId`, `VaultSigner` finds the account by its key
+- a confirmation screen with a summary: a decoder per contract, merging a split swap
+- **root**: PRF → 24 words (BIP-39) → owner keys `m/44'/<slip44>'/<i>'/0/0`. Checked on
+  the "abandon ×23 art" vector: the EVM path gives the standard address
+- **hot key** from PRF per scope, a non-exportable `CryptoKey`; after the browser data
+  is cleared it comes back with one passkey touch and no transaction; slot change
+- **new device**: `PUB_WA_` is recovered from the assertion's signature
+  (`discover.js`), accounts are found on the chain, no backend needed
+- **Recovery phrase**: showing the words and putting them on owner where owner signs
+  with this passkey
+- **import with a private key** (§6a): an owner key, and the account becomes ours; an
+  active key, only the passkey and auto signing
+- **key replacement and restore with the words** (§8): every account moves to a new
+  passkey and a new root, one transaction per account
+
+## Account proof (`prove`)
+
+The app asks the person to prove they own `alice@active` on this network, and someone
+else checks it: the `msgproof` contract or a backend (both in `alcor-examples`). The
+profile is ours, for Antelope: CAIP-122 fields (SIWE, EIP-4361) and a prefix in the
+spirit of EIP-191.
 
 ```
 {domain} wants you to sign in with your Antelope account:
@@ -611,375 +622,380 @@ URI: {uri}
 Version: 1
 Chain ID: {chain_id}
 Nonce: {nonce}
-Issued At: {ISO, секунды, Z}
-Expiration Time: {ISO, секунды, Z}
+Issued At: {ISO, seconds, Z}
+Expiration Time: {ISO, seconds, Z}
 ```
 
-Подпись — `sha256("\x19Antelope Signed Message:\n" + длина в байтах UTF-8 + текст)`.
+The signature is `sha256("\x19Antelope Signed Message:\n" + length in UTF-8 bytes + text)`.
 
-- **Никогда не digest и не байты от app.** Подписать присланный digest — значит
-  подписать транзакцию: `sha256(chain_id ‖ tx ‖ cfd)`. Префикс уводит первые 32
-  байта от любого настоящего `chain_id`.
-- **Что выбирает окно:** `domain` и `uri` — из `event.origin`, `chain_id` — из
-  реестра, `Issued At` — свои часы. App шлёт только `account`, `permission?`,
-  `statement` (≤ 300 символов, без переводов строк, управляющих, bidi и
-  zero-width), `nonce` (16–64 буквы и цифры) и `expiresAt` (≤ 1 ч).
-- **Chain ID обязателен**: у XPR и Vaulta один `slip44`, один ключ на двух сетях,
-  а `alice` на разных сетях — разные люди.
-- **Только passkey, только клик.** Fast и Auto доказательство не подписывают.
-  Перед экраном окно читает authority: passkey должен подписывать один, нода не
-  ответила — отказ.
-- **Проверка** — по текущему состоянию чейна (`check_permission_authorization`),
-  поэтому снятый с аккаунта ключ сразу перестаёт доказывать. Проверяющий сам
-  сверяет `domain` со своим и сжигает `nonce`.
-- **Это не разрешение двигать средства.** Бэк, который примет подпись текста как
-  авторизацию вывода, откроет XSS дорогу мимо всех экранов транзакций.
+- **Never a digest or bytes from the app.** Signing a digest sent in means signing a
+  transaction: `sha256(chain_id ‖ tx ‖ cfd)`. The prefix moves the first 32 bytes away
+  from any real `chain_id`.
+- **What the window chooses:** `domain` and `uri` from `event.origin`, `chain_id` from
+  the registry, `Issued At` from its own clock. The app sends only `account`,
+  `permission?`, `statement` (≤ 300 characters, no line breaks, control, bidi or
+  zero-width characters), `nonce` (16–64 letters and digits) and `expiresAt` (≤ 1 h).
+- **Chain ID is required**: XPR and Vaulta share one `slip44`, one key on two
+  networks, and `alice` on different networks are different people.
+- **Passkey only, click only.** Fast and Auto do not sign a proof. Before the screen
+  the window reads the authority: the passkey must sign alone; a node that did not
+  answer is a refusal.
+- **Checking** is against the chain's current state (`check_permission_authorization`),
+  so a key removed from the account stops proving at once. The checker compares
+  `domain` with its own and burns the `nonce`.
+- **It is not permission to move funds.** A backend that takes a signed text as
+  authorisation for a withdrawal opens a road for XSS past every transaction screen.
 
-Формат живёт в трёх местах: `message.js` здесь, `contract/msgproof.cpp` и
-`src/proof.ts` в `alcor-examples`. Меняешь — все три сразу. Их сводит
-`tests/chain/msgproof.local.mjs` (не в `yarn test`: нужны `nodeos`, `cdt-cpp` и
-соседний `alcor-examples`): подписывает кодом Signer на локальной цепи, проверяет
-контрактом и восстанавливает тот же ключ вне цепи.
+The format lives in three places: `message.js` here, `contract/msgproof.cpp` and
+`src/proof.ts` in `alcor-examples`. Change it, change all three. They are tied together
+by `tests/chain/msgproof.local.mjs` (not in `yarn test`: it needs `nodeos`, `cdt-cpp`
+and `alcor-examples` next door): it signs with the Signer's code on a local chain,
+checks with the contract and recovers the same key off chain.
 
-### Переименование депозитного адреса (`renameSign`)
+### Deposit address rename (`renameSign`)
 
-Депозитный адрес открывает аккаунт с выбранным именем; если имя заняли раньше,
-courier переименовывает адрес только по подписи owner-ключа (alcor-bridge
-`docs/FRONTEND.md` §2.4). Текст собирает окно (`renameFields`, `renameText` в
-`message.js`), от app — только адрес и имена:
+A deposit address opens an account with the chosen name; if the name was taken first,
+the courier renames the address only with the owner key's signature (alcor-bridge
+`docs/FRONTEND.md` §2.4). The window builds the text (`renameFields`, `renameText` in
+`message.js`); from the app come only the address and the names:
 
 ```
 Alcor deposit address rename
-Address: <адрес, строчными>
+Address: <address, lowercase>
 Network: telos | wax | xpr
-From: <имя, которое просил адрес>
-To: <новое имя>
-Expires: <UTC до секунды, +50 минут>
+From: <the name the address asked for>
+To: <the new name>
+Expires: <UTC to the second, +50 minutes>
 ```
 
-- Сеть — `id` из реестра и только `telos`, `wax`, `xpr`: у courier нет тестнетов,
-  в остальных сетях окно отказывает. Срок ставит окно (courier берёт не дальше
-  часа). Подпись — тот же префикс, что у `prove` (`proofDigest`); первая строка
-  никогда не совпадёт с доказательством, поэтому подпись одного не выдать за другое.
-- Ключ — owner из корня (касание passkey, у ключа в браузере — мастер-ключ),
-  `ownerKeyOf` должен найти присланный `owner` среди своих слотов.
-- Ключи не меняются: новое имя открывается теми же ключами, так что худшее, что
-  может скомпрометированный app, — другое имя для своего же аккаунта.
-- Формат живёт ещё в `services/courier/signup.ts` (`renameText`, `renameDigest`).
-  Меняешь — оба сразу.
+- The network is the registry `id`, and only `telos`, `wax`, `xpr`: the courier has no
+  testnets, on other networks the window refuses. The window sets the expiry (the
+  courier takes at most an hour). The signature uses the same prefix as `prove`
+  (`proofDigest`); the first line never matches a proof, so neither passes for the other.
+- The key is owner from the root (a passkey touch, or a browser key's master key);
+  `ownerKeyOf` must find the `owner` sent among its slots.
+- No keys change: the new name opens with the same keys, so the worst a compromised
+  app can do is another name for its own account.
+- The format also lives in `services/courier/signup.ts` (`renameText`,
+  `renameDigest`). Change it, change both.
 
-## Уровни подписи
+## Signing levels
 
-У каждого аккаунта в этом браузере — один из трёх. Переключатель есть в строке
-аккаунта на главной и на экране подписи. На экране подписи выбор действует со
-следующей подписи: текущая подписывается как есть (ключом браузера, если он
-стоит, иначе passkey), а смена прав уходит отдельной транзакцией после неё.
+Each account in this browser has one of three. The switch is in the account's row on
+the home screen and on the signing screen. On the signing screen the choice takes
+effect from the next signature: the current one is signed as is (with the browser key
+if it is there, otherwise the passkey), and the permission change goes as a separate
+transaction after it.
 
-| Уровень | Как подписывается | Что на чейне |
+| Level | How it signs | What is on the chain |
 |---|---|---|
-| Passkey | каждая подпись через устройство | только passkey |
-| Fast | кнопкой в окне Alcor Signer | + ключ браузера на active |
-| Auto | сделки Alcor — сразу, без окна; остальное — как Fast | тот же ключ; флаг `auto` на его записи в IndexedDB |
+| Passkey | every signature through the device | the passkey only |
+| Fast | by a button in the Alcor Signer window | + a browser key on active |
+| Auto | Alcor trades at once, no window; the rest as Fast | the same key; an `auto` flag on its IndexedDB record |
 
-Новый аккаунт начинает с Fast: фабрика кладёт в active один passkey, поэтому
-на экране подписи переключатель стоит на Fast, пока человек не выбрал режим
-для аккаунта в этом браузере (`picked` в `cache.js`; выбор — экран подписи,
-переключатель в настройках, импорт, enroll). Первая подпись идёт passkey, ключ
-браузера ставится следом своей транзакцией — второе касание. Оставил Passkey —
-это выбор, больше не предлагается. Нода не ответила — не предлагается.
+A new account starts with Fast: the factory puts one passkey into active, so on the
+signing screen the switch stands on Fast until the person has chosen a mode for the
+account in this browser (`picked` in `cache.js`; chosen on the signing screen, the
+switch in settings, import, enroll). The first signature goes with the passkey, and the
+browser key is added right after in its own transaction: a second touch. Left it on
+Passkey: that is a choice, not offered again. A node did not answer: not offered.
 
-Fast ↔ Auto — локально, без транзакции. Лимитов и срока у Auto нет намеренно:
-выключается тем же переключателем. Смену прав не подписывает ни один уровень,
-кроме passkey (`assertAllowedFromApp`, `requiresPasskey`).
+Fast ↔ Auto is local, with no transaction. Auto has no limits and no expiry on
+purpose: it is turned off by the same switch. No level but the passkey signs a
+permission change (`assertAllowedFromApp`, `requiresPasskey`).
 
-Без окна Auto подписывает только сделки Alcor (`isAlcorTrade` в `summary.js`) —
-это белый список, а не «любой контракт Alcor»:
+Without the window Auto signs only Alcor trades (`isAlcorTrade` in `summary.js`): a
+whitelist, not "any Alcor contract":
 
-| Контракт | Что можно |
+| Contract | What is allowed |
 |---|---|
-| пулы (`swap.alcor`) | перевод с memo `deposit`; своп `swapexactin` или `swapexactout`, где получатель — отправитель; `addliquid`, `subliquid`, `collect` себе, `withdraw`, `getreward`, `stake`, `stakelastpos`, `unstake`, `unstakepos` |
-| спот | перевод с memo-ценой `<amount>@<contract>` или маркет-ордером `<минимум>@<contract>\|min`; `cancelbuy`, `cancelsell` |
-| liquid staking (WAX, `alcor.liquid` в реестре) | перевод с memo `stake` или `withdraw` |
-| системный (`eosio`) | `delegatebw` себе без `transfer`; `undelegatebw`, `stakexpr`, `unstakexpr` себе; `refund`, `voterclaim` |
+| pools (`swap.alcor`) | a transfer with memo `deposit`; a `swapexactin` or `swapexactout` swap where the recipient is the sender; `addliquid`, `subliquid`, `collect` to oneself, `withdraw`, `getreward`, `stake`, `stakelastpos`, `unstake`, `unstakepos` |
+| spot | a transfer with a price memo `<amount>@<contract>` or a market order `<minimum>@<contract>\|min`; `cancelbuy`, `cancelsell` |
+| liquid staking (WAX, `alcor.liquid` in the registry) | a transfer with memo `stake` or `withdraw` |
+| system (`eosio`) | `delegatebw` to oneself without `transfer`; `undelegatebw`, `stakexpr`, `unstakexpr` to oneself; `refund`, `voterclaim` |
 
-Не в списке намеренно: `createpool`, фермы (`newincentive`, переводы с memo
-`activeincent` и `incentreward#<id>` — награда уходит стейкерам насовсем), `lockpos`, `transferpos`, `getfees`,
-`buyram` и `sellram` (сделка по рыночной цене RAM), стейк на чужой аккаунт, и
-**OTC целиком** — там цена та, что в оффере, а оффер выбирает app: XSS создал бы
-оффер «мусор за весь баланс» и исполнил его. Ордербук `book.alcor` пока весь
-идёт через окно. Всё остальное открывает окно: это
-не недоверие к app, а второй взгляд на то, что выходит за рамки торговли.
+Left out on purpose: `createpool`, farms (`newincentive`, transfers with memo
+`activeincent` and `incentreward#<id>`: the reward goes to stakers for good), `lockpos`,
+`transferpos`, `getfees`, `buyram` and `sellram` (a trade at the market price of RAM),
+staking to another account, and **OTC entirely**: there the price is the one in the
+offer, and the app picks the offer: an XSS would create an offer "junk for the whole
+balance" and fill it. The `book.alcor` order book goes through the window for now.
+Everything else opens the window: not distrust of the app, but a second look at what
+goes beyond trading.
 
-Поверх списка — всё, на что сводка ставит плашку (`autoRefusal` в `app.js`):
-своп или ордер без минимума, нераспознанный memo, чужой получатель,
-предупреждение об ABI. Поэтому рыночный ордер на споте (минимум 0) в Auto
-открывает окно — иначе XSS на app продал бы баланс за ноль в тонкий стакан.
+On top of the list, everything the summary puts a banner on (`autoRefusal` in
+`app.js`): a swap or order with no minimum, an unrecognised memo, a foreign recipient,
+an ABI warning. So a market order on spot (minimum 0) opens the window in Auto:
+otherwise an XSS on the app would sell the balance for zero into a thin book.
 
-**Чего Auto не проверяет — цену.** Минимум в свопе и цену лимитного ордера
-пишет app, и XSS может поставить заведомо плохую, но не нулевую. Auto значит
-доверие app в цене сделки; закрыть это может только сверка с пулом или стаканом
-на чейне.
+**What Auto does not check: the price.** The minimum in a swap and the price of a limit
+order are written by the app, and an XSS can set a bad one that is not zero. Auto means
+trusting the app with the trade's price; only a check against the pool or the book on
+the chain could close that.
 
-Как Auto доходит до подписи:
+How Auto gets to a signature:
 
-1. App держит vault невидимым iframe (`warmAutoSigner` в `lib/vault/popup.ts`,
-   поднимается при входе). Vault в iframe не рисует ничего — только
-   `serveEmbedded` в `protocol.js` и `autoSign` в `app.js`.
-2. Подпись сначала уходит туда (`requestAutoSignature`). Vault сам решает:
-   Auto выключен, ключа нет или это не сделка Alcor — отказ, быстро и до
-   всякой сети.
-3. Отказ — app открывает обычное окно. В окне Auto тоже работает: подписывает
-   сразу и закрывается (`confirmScreen`).
+1. The app keeps the vault as an invisible iframe (`warmAutoSigner` in
+   `lib/vault/popup.ts`, raised at sign-in). The vault in the iframe draws nothing:
+   only `serveEmbedded` in `protocol.js` and `autoSign` in `app.js`.
+2. The signature goes there first (`requestAutoSignature`). The vault decides by
+   itself: Auto is off, there is no key, or it is not an Alcor trade: a refusal, fast
+   and before any network.
+3. On a refusal the app opens the usual window. Auto works in the window too: it signs
+   at once and closes (`confirmScreen`).
 
-App решает, идти ли в iframe, по запомненному режиму (Safari пускает окно
-только синхронно из клика, ждать iframe перед окном нельзя). Поэтому окно
-подписи отдаёт режим подписавшего аккаунта в `vault:result` (`level`) — и с
-подписью, и с отказом, но только когда он известен: подписант один, на рабочем
-permission, нода ответила. Отставшая метка (Auto включили прямо в Signer)
-открывает окно не больше одного раза. App ещё сверяет режим через iframe при
-смене аккаунта и при возврате во вкладку.
+The app decides whether to go to the iframe by the remembered mode (Safari opens a
+window only synchronously from a click, so waiting for the iframe before the window is
+not possible). So the signing window returns the signing account's mode in
+`vault:result` (`level`), with a signature and with a refusal, but only when it is
+known: one signer, on the working permission, the node answered. A stale label (Auto
+turned on right in the Signer) opens the window at most once. The app also checks the
+mode through the iframe when the account changes and when the tab comes back.
 
-Тот же iframe отвечает app на `vault:level` — какой режим у аккаунта, для
-метки в меню. Только чтение: команды «поменяй режим» в iframe нет и не будет,
-её прислал бы и XSS на app. Меняет режим человек, в окне (`kind: 'settings'`).
-Если в хранилище iframe нет ни одного passkey, он молчит: значит, браузер
-выдал ему пустое хранилище чужого сайта, и любой ответ был бы «passkey».
+The same iframe answers the app's `vault:level`: which mode the account has, for the
+label in the menu. Read only: there is no "change the mode" command in the iframe, and
+there will not be; an XSS on the app would send it too. The person changes the mode, in
+the window (`kind: 'settings'`). If the iframe's storage has no passkey at all, it
+stays silent: the browser gave it a foreign site's empty storage, and any answer would
+be "passkey".
 
-Iframe работает, только когда app и vault — один сайт (`alcor.exchange` и
-`sign.alcor.exchange`). Между разными сайтами браузер даёт iframe отдельное
-хранилище, ключа в нём нет, и остаётся окно — так в деве (`[::1]:3000` и
-`sign.localhost`). Встраивать vault разрешено только app своего окружения
-(`frame-ancestors` из `ENVIRONMENTS`).
+The iframe works only when the app and the vault are one site (`alcor.exchange` and
+`sign.alcor.exchange`). Across different sites the browser gives the iframe separate
+storage, there is no key in it, and the window remains: so it is in dev (`[::1]:3000`
+and `sign.localhost`). Only the app of the same environment may embed the vault
+(`frame-ancestors` from `ENVIRONMENTS`).
 
-## Аккаунт без passkey
+## Account without a passkey
 
-Для тех, у кого passkey не выходит: Windows Hello без PRF, встроенные браузеры X и
-Telegram без WebAuthn, отменённое окно passkey. Предлагается только после сбоя passkey
-при регистрации или сразу, если WebAuthn в браузере нет. Passkey остаётся основным путём.
+For those whose passkey does not work: Windows Hello without PRF, the in-app browsers
+of X and Telegram without WebAuthn, a cancelled passkey prompt. Offered only after a
+passkey failure at sign-up, or at once if the browser has no WebAuthn. The passkey
+remains the main way.
 
-| | Passkey-аккаунт | Ключ в браузере |
+| | Passkey account | Browser key |
 |---|---|---|
-| active | `PUB_WA_` (+ R1 Fast) | `PUB_R1_`, WebCrypto `generateKey(…, false)`: приватная часть не существует в JS |
-| owner | K1 из слов, выведенных из PRF | K1 из слов, выведенных из мастер-ключа (HMAC), номер 0 |
-| слова | показываются когда угодно, касанием | обязательно при создании и снова когда угодно, кликом; нигде не хранятся |
-| подпись | Passkey / Fast / Auto | Fast (клик в окне) / Auto (сделки Alcor) |
-| смена прав | только passkey | ничем в окне; только 24 слова через восстановление |
-| потеря браузера | passkey синхронизирован | вернут только слова |
+| active | `PUB_WA_` (+ R1 Fast) | `PUB_R1_`, WebCrypto `generateKey(…, false)`: the private part never exists in JS |
+| owner | K1 from the words derived from PRF | K1 from the words derived from the master key (HMAC), index 0 |
+| words | shown any time, by a touch | required at creation and again any time, by a click; stored nowhere |
+| signing | Passkey / Fast / Auto | Fast (a click in the window) / Auto (Alcor trades) |
+| permission change | passkey only | nothing in the window; only the 24 words through restore |
+| lost browser | the passkey is synced | only the words bring it back |
 
-Хранение (`device.js`): IndexedDB `alcor-vault-device`, store `keys`, запись — пара
-ключей P-256, мастер-ключ HMAC-SHA256 (`seed`), сети (`chainIds`), owner, `autoFor`
-(«сеть:аккаунт»). Оба ключа неизвлекаемые. Слова — `HMAC(seed, ROOT_SALT)` → BIP-39,
-как у passkey из PRF: одни и те же при каждом выводе, нигде не лежат. Поэтому они
-показываются при регистрации (галка «I saved» обязательна) и снова — на главной,
-в `settings` и по `backup`. Источник правды — IndexedDB; публичная копия списка в
-localStorage `alcor-vault-device-keys`, пересобирается при старте (`refreshDeviceKeys`).
-Один ключ на браузер — одни слова на все сети. Регистрация в другой сети берёт ключ,
-который уже есть (`addDeviceNetwork`): owner этой сети выводится из того же мастер-ключа
-(`ownerPath` у каждой сети свой), новых слов нет. Новый ключ делается, только когда у
-каждого ключа здесь уже есть аккаунт в этой сети. Восстановление — один ключ на все
-переехавшие сети, одни слова.
+Storage (`device.js`): IndexedDB `alcor-vault-device`, store `keys`; a record is a P-256
+key pair, an HMAC-SHA256 master key (`seed`), networks (`chainIds`), owner, `autoFor`
+("network:account"). Both keys are non-extractable. The words are
+`HMAC(seed, ROOT_SALT)` → BIP-39, as with a passkey from PRF: the same at every
+derivation, stored nowhere. So they are shown at sign-up (the "I saved" tick is
+required) and again on home, in `settings` and by `backup`. IndexedDB is the source of
+truth; a public copy of the list sits in localStorage `alcor-vault-device-keys`, rebuilt
+at start (`refreshDeviceKeys`). One key per browser: one set of words for every network.
+A sign-up on another network takes the key already here (`addDeviceNetwork`): that
+network's owner comes from the same master key (each network has its own `ownerPath`),
+no new words. A new key is made only when every key here already has an account on that
+network. Restore: one key for every network that moved, one set of words.
 
-Что такой ключ не делает: смену прав (`requiresPasskey`) и доказательство аккаунта
-(`prove`) — отказ одной строкой; импорт в браузере без WebAuthn — тоже. `backup`
-показывает слова, как у passkey. Ещё один аккаунт (`create`) — новый ключ в браузере
-со своими словами («Without a passkey», без WebAuthn — сразу). Аккаунт, открытый
-digits-memo (owner-ключ и на owner, и на active), достраивается (`finish`) одним
-кликом: owner-ключ выводится из мастер-ключа и ставит ключ в браузере на active.
+What such a key does not do: permission changes (`requiresPasskey`) and account proofs
+(`prove`) are a one-line refusal; so is import in a browser without WebAuthn. `backup`
+shows the words, as for a passkey. One more account (`create`) is a new browser key
+with its own words ("Without a passkey", or at once without WebAuthn). An account
+opened by a digits memo (the owner key on both owner and active) is finished (`finish`)
+with one click: the owner key is derived from the master key and puts the browser key
+on active.
 
-Восстановление словами в браузере без passkey (или по ссылке «Keep it in this browser
-instead») — как в passkey: **новые** 24 слова (из мастер-ключа нового ключа),
-показываются до всего, owner переезжает на них, на active — новый ключ в браузере, все прочие R1 и наши passkey снимаются.
-Старые слова могли прийти из украденного passkey, который выведет их снова, — их
-оставлять нельзя. «Move to a passkey» на главной — то же восстановление в passkey, но без ввода слов:
-они выводятся из мастер-ключа (`restoreScreen({ root })`); в браузере без WebAuthn
-этой кнопки нет.
-Старый ключ в браузере забывается, только когда переехали все аккаунты, где он стоял.
+Restoring with the words in a browser without a passkey (or by the link "Keep it in
+this browser instead") is as with a passkey: **new** 24 words (from the new key's
+master key), shown before anything else; owner moves to them, active gets a new browser
+key, every other R1 and our passkeys are removed. The old words may have come from a
+stolen passkey, which will derive them again, so they must not stay. "Move to a
+passkey" on home is the same restore into a passkey, but without typing the words:
+they come from the master key (`restoreScreen({ root })`); a browser without WebAuthn
+has no such button.
+The old browser key is forgotten only when every account it was on has moved.
 
-Цена: ключи живут в профиле браузера. `extractable: false` прячет их от скриптов, но
-не от программы с доступом к файлам и не от подменённого кода, пока страница открыта —
-как ключи Fast sign. И мастер-ключ даёт слова, то есть owner: код на этом origin (XSS)
-или вирус с доступом к профилю получат не только active, но и owner. Это сознательный
-размен: слова, которые нельзя показать снова, люди теряют (так застрял test112.al на
-WAX). Подпись — клик без Face ID.
+The price: the keys live in the browser profile. `extractable: false` hides them from
+scripts, but not from a program with access to the files, and not from swapped code
+while the page is open, just like Fast sign keys. And the master key gives the words,
+that is owner: code on this origin (XSS) or malware with access to the profile gets not
+only active but owner too. A deliberate trade-off: words that cannot be shown again get
+lost (that is how test112.al got stuck on WAX). Signing is a click with no passkey.
 
-## Чего нет
+## What is not there
 
-- **классификатора** (§8) — решения «тихо или на экран» не принимается вообще,
-  каждая подпись идёт через глаза
-- **релея** — нет косайна, нет 2-of-2, нет мгновенного отзыва и лимитов
-- **спонсора** — аккаунт по новым ключам заводится руками
-- **срока жизни** у горячего ключа — он живёт, пока не выключишь
-- **передачи запроса через релей** — пока прямой `postMessage`, помечено в
-  `protocol.js` и `popup.ts` как заглушка
+- **a classifier** (§8): no "quietly or on screen" decision is made at all, every
+  signature goes past the person's eyes
+- **a relay**: no co-signing, no 2-of-2, no instant revocation and no limits
+- **a sponsor**: an account for new keys is opened by hand
+- **a lifetime** for the hot key: it lives until turned off
+- **passing the request through a relay**: plain `postMessage` for now, marked as a
+  stub in `protocol.js` and `popup.ts`
 
-## Кошельки и `updateauth`
+## Wallets and `updateauth`
 
-Миграция существующего аккаунта на Alcor Signer — это `updateauth`, подписанный
-тем кошельком, которым человек уже вошёл. Кошельки относятся к этому по-разному,
-и это решает, кому мы вообще можем предложить переезд:
+Moving an existing account to Alcor Signer is an `updateauth` signed by the wallet the
+person already signed in with. Wallets treat it differently, and that decides whom we
+can offer the move at all:
 
-| Кошелёк | `updateauth` | Что видно |
+| Wallet | `updateauth` | What is seen |
 |---|---|---|
-| Anchor | **отклоняет** | `ESRURI_UPDATEAUTH_FORBIDDEN`, «This request has a forbidden action». Разрешается в настройках кошелька («allow dangerous transactions») |
-| WebAuth (XPR) | **подписывает** | Показывает экшен целиком и даёт подписать. Проверено на `avral3`, сентябрь 2026 |
+| Anchor | **refuses** | `ESRURI_UPDATEAUTH_FORBIDDEN`, "This request has a forbidden action". Allowed in the wallet's settings ("allow dangerous transactions") |
+| WebAuth (XPR) | **signs** | Shows the whole action and lets it be signed. Checked on `avral3`, September 2026 |
 
-Поэтому Anchor привязку не предлагает вовсе: модалка в app (`importOnly` в
-`useVaultEnrollment.ts`) ведёт его в Alcor Signer на импорт приватного ключа —
-окном с запросом `kind: 'import'` (`requestImport`). Ключ вставляется в окне
-Signer; после второго passkey окно отвечает app (passkey и аккаунты) и
-закрывается, а app сразу входит этим аккаунтом через Signer.
+So Anchor gets no linking offer at all: the modal in the app (`importOnly` in
+`useVaultEnrollment.ts`) sends it to Alcor Signer to import a private key, by a window
+with a `kind: 'import'` request (`requestImport`). The key is pasted in the Signer
+window; after the second passkey prompt the window answers the app (passkey and
+accounts) and closes, and the app signs in with that account through the Signer at once.
 
-То есть запрет — политика Anchor, а не общее правило Antelope. Текст отказа
-разбирается в `utils/antelopeError.ts` (`BY_WALLET`) и превращается в инструкцию,
-а не в код ошибки.
+So the ban is Anchor's policy, not a general Antelope rule. The refusal text is parsed
+in `utils/antelopeError.ts` (`BY_WALLET`) and turned into an instruction, not an error
+code.
 
-## Грабли
+## Pitfalls
 
-- `localhost`, `[::1]` и `127.0.0.1` — **три разных origin**. Список в
-  `ENVIRONMENTS.dev` (`chain.js`), симптом несовпадения — «запрос не пришёл».
-- **rpid читается прямо из `PUB_WA_`.** Ключ несёт домен внутри себя: 33 байта
-  точки, байт presence, длина varuint32, дальше rpid строкой. Чейн сверяет его с
-  `clientDataJSON` при каждой подписи. Отсюда практический вывод: по префиксу
-  `PUB_WA_` нельзя понять, наш это ключ или чужой WebAuthn с другого сайта —
-  надо смотреть rpid (`keyRpid()` в `lib/vault/authority.ts`). Ключ чужого
-  домена в этом окне не заработает никогда.
-- **PRF включается только при создании** ключа, и флагу
-  `getClientExtensionResults().prf?.enabled` верить нельзя: Chrome возвращает
-  пустой результат и у credential, который PRF поддерживает. Поэтому проверка
-  одна — вывести корень сразу после создания (`confirmKeyFlow`). Не вывелся
-  (`NoPrfError`) — ключ в кеш не попадает, устройство просят забыть его
-  (`dropCredential`, `signalUnknownCredential`, где он есть), а человеку — телефон
-  через QR в том же окне passkey. Заранее не спрашивается: `getClientCapabilities`
-  отвечает за браузер, а не за authenticator, и что каждый браузер кладёт в
-  `extension:prf`, не проверено — ложный `false` закрыл бы регистрацию целой платформе.
-- **Ключ создан, а второе окно passkey отменили** (`NotAllowedError`) — ключ уже лежит на
-  устройстве. Та же кнопка подтверждает его (`unconfirmed`), а не делает следующий: иначе
-  каждая попытка оставляла бы ещё один пустой passkey в списке системы. Ссылка «Make a
-  new passkey instead» — на случай, если ключ остался на телефоне, которого нет рядом.
-  Найден другим путём (уже в кеше) — забывается: иначе Replace «переехал» бы на тот же
-  ключ. Другая ошибка второго окна — тоже забывается. Совет «создай заново на другом
-  устройстве» — только здесь: держателю аккаунтов без PRF показывается прежнее «обнови
-  браузер или возьми другое устройство».
-- **PRF — не больше двух солей за касание.** Поэтому соль горячих ключей одна на
-  область, а номер ключа выводится локально — иначе перебор 256 номеров
-  стоил бы сотни Face ID.
-- **Горячий ключ — свой на каждую область:** `chain_id`, аккаунт,
-  permission (`scopeOf` в `session.js`). Один ключ на браузер означал бы, что
-  утечка открывает все аккаунты разом, а выключение на одном стирает ключ,
-  которым живут остальные. Сеть — по `chain_id`, а не по имени: у XPR их два.
-  Лежит в IndexedDB — ещё не значит «включено»: экран подписи даёт кнопку, только
-  если чейн примет ключ подписанта (`signingOptions`), главная читает то же самое
-(`keySatisfies`).
-- **Authority для `updateauth` — только с согласия нод** (`agreedAuthority`):
-  перезапись сохраняет всё, что прочитала, поэтому одна врущая нода вписала бы
-  свой ключ в аккаунт подписью passkey. Ответить должны минимум две ноды, и все
-  ответившие — одинаково. Для показа хватает одной (`permissionAuthority`).
-  Сразу после смены прав ноды могут расходиться секунду-другую — это отказ с
-  просьбой повторить, а не подпись. `submitWith` к тому же до касания показывает, кто
-  ещё останется в правах (`reviewAuthority`), если остаётся хоть кто-то, кроме
-  passkey и ключей этого браузера — чужой ключ, аккаунт, задержка. Ключи, которые
-  изменение само добавляет, вызывающий передаёт в `known`: в браузере их ещё нет.
-- **Включение и выключение правят ровно один ключ** (`editKeysAction`): берётся
-  authority с чейна, добавляется или снимается ключ браузера, остальное — порог,
-  делегации, задержки, ключи прежнего кошелька — уезжает как было. Так быстрые
-  сделки работают и на перенесённом аккаунте (`avral3` с ключами WebAuth).
-- **Ключ в браузере — не ключ Fast sign**, хотя тоже `PUB_R1_`. Панель passkey-аккаунта
-  и выключение Fast считают снимаемыми только R1, которых нет в списке ключей этого
-  браузера (`isFastKey`). Восстановление и переезд снимают все R1 намеренно: там
-  уходят именно с потерянного или старого ключа, а новый ещё не на чейне. После
-  переезда свои старые ключи в браузере забываются (`forgetMovedDeviceKeys`).
-- **Auto у ключа в браузере знает свой аккаунт** (`autoFor` в записи): app даёт
-  iframe секунду на решение без сети (`AUTO_DECIDE_MS`), спросить чейн, чей это ключ,
-  некогда. Чейн проверяется после `accept`, как у ключей Fast. Один аккаунт на ключ:
-  выключение Auto для другого аккаунта чужой `autoFor` не трогает.
-- **`PUB_R1_` — тип ключа, а не «наш».** Такие же ключи бывают у мобильных
-  кошельков (Secure Enclave). Выключение и замена ключа браузера снимают только
-  слоты этого passkey (`slotsOn`, одно касание на вывод), чужой R1 остаётся, и
-  выключение прямо об этом говорит. Без passkey (восстановление по словам) свои
-  от чужих не отличить — там снимаются все R1, и экран их перечисляет. Режим
-  Passkey не значит «на чейне нет ключей браузера»: панель читает чейн и, если
-  они там есть (другое устройство, потерянный IndexedDB), показывает их и
-  предлагает снять.
-- **Прочие permissions при восстановлении.** Вор с ключом от active может
-  завести дочернюю permission со своим ключом и `linkauth` на `transfer`; замена
-  ключей owner и active её не трогает. Но так же выглядят и легитимные: WAX boost
-  (`paybw` → `boost.wax::noop`). Поэтому экран восстановления показывает каждую
-  (что может подписать, кто держит, что под ней) с галкой «Remove», выключенной
-  по умолчанию; отмеченные снимаются той же транзакцией (`unlinkauth`, затем
-  `deleteauth`, дети раньше родителей).
-- **После переключения тумблер не перечитывает чейн.** Ответ ноды на нашу
-  транзакцию и есть новое состояние; `get_accounts_by_authorizers` индексируется
-  с задержкой, и перечитанное сразу «выключено» было бы враньём.
-- **Линковка существующего аккаунта ставит оба ключа разом.** Экран `enroll`
-  заводит ключ быстрых сделок под область из запроса (галка, включена по
-  умолчанию, только на рабочем permission) и отдаёт app оба публичных ключа;
-  кошелёк ставит их одним `updateauth`. Не поставил — ключ лежит мёртвым.
-- **Горячий ключ стоит на `active`** и на чейне может всё, что может active,
-  включая `updateauth` самого active и `transfer` куда угодно. Решено в
-  ADR-0010: отдельного `trade` нет, ограничение — только vault (экран подписи,
-  `requiresPasskey`). Owner он не тронет, и аккаунт возвращается словами.
-- **Причина ошибки лежит в `error.details`, а не в `what`.** `APIError.formatError`
-  из wharfkit достаёт её только при `what === 'unspecified'`, а у ассертов
-  контракта `what` заполнен — и наружу уходит «eosio_assert_message assertion
-  failure at /v1/chain/push_transaction», по которому не понять ничего. Разбор —
-  в `errors.js` и в `utils/antelopeError.ts`; мимо них ошибки ноды не показывать.
-- **Грамматика memo своя у каждого контракта.** Спот кладёт `<asset>@<contract>`
-  (с `|min` — маркет-ордер, который откатится, если придёт меньше), AMM —
-  `swapexactin#пул#получатель#минимум@контракт#дедлайн` или `swapexactout#…#ровно@контракт#…`
-  (тогда перевод — потолок, сдача возвращается отправителю), бридж —
-  `<домен сети>:<получатель>` на Telos и `<аккаунт Telos>` в хранилище на WAX, ордербук
-  (`book.alcor`) — `swap#<рынок>#<минимум в единицах покупаемого>[#получатель]`, а любой другой
-  memo у него — депозит на баланс отправителя. Одним регэкспом не
-  покрывается, поэтому в `summary.js` декодер на каждый контракт, и выбирается он
-  по получателю перевода (`chain.alcor`, `chain.bridge`), а не по виду memo: memo Alcor на чужой
-  адрес — красная плашка, а не «своп». Ноль на месте запрашиваемой суммы
-  означает «любая цена» в обеих — ловить надо обе.
-- **Ордербук считает в лотах рынка.** В `placeorder` и `buyquote` объём — число
-  лотов, цена — единицы quote за лот; в токены их переводит только строка рынка
-  (`lot_size`, base, quote). Она и оба токена читаются с чейна при сборке
-  (`readBookMarkets` в `sign.js`) и считаются, только если вторая нода вернула то
-  же самое: одна лживая нода подменила бы лот или пару, и цена на экране разошлась
-  бы с подписанной. Не подтвердилось — ордер показывается в единицах контракта с
-  жёлтой плашкой. Цена за токен точная; если лот её не делит — с `≈`.
-- **Сплит-своп — несколько переводов.** Сводка склеивает их в одну пару строк,
-  если совпадает всё, кроме сумм и маршрута (токены с точностью, отправитель,
-  получатель). Риски проверяются на каждой ноге до склейки: нога без минимума в
-  сумме не видна. Суммы — BigInt в целых единицах, не float.
-- **Сводка строится из транзакции, а не из запроса.** `buildTransaction`
-  раскодирует собранные экшены обратно по ABI; экран, «What exactly gets signed»
-  и проверка `requiresPasskey` смотрят на них. Раскодированное кодируется ещё раз
-  и обязано совпасть с подписываемыми байтами: `data` сырыми байтами wharfkit не
-  кодирует, а декодер останавливается там, где кончается ABI, — хвост после него
-  ушёл бы в контракт, не показавшись на экране.
-- **Подписантов на экране — все.** Один passkey подписывает сразу за все свои
-  аккаунты; при нескольких — жёлтая плашка, и режим подписи не выбирается.
-- Тестовый аккаунт: `alcorsigner1` на Telos — прототипный: `owner` на passkey,
-  слов на нём нет. «Recovery phrase» покажет его как «not covered yet» и
-  поставит слова на owner по Face ID.
-- **Действия над ключом — всегда над выбранным.** Слова и замена относятся к
-  одному passkey; при нескольких на устройстве человек выбирает, а не получает
-  первый из кеша. Имя нового passkey — `Alcor <дата, время>`: ОС показывает его в
-  каждом окне, и счётчик `key-N` повторялся между браузерами и после очистки кеша,
-  так что «key-1» в окне мог оказаться не тем ключом.
-- **Переезд не врёт.** Replace не начинается, пока молчит хоть одна сеть;
-  «Moved» / «Restored» — только когда переехало всё, иначе «Not everything
-  moved» с «Try again» на тот же новый ключ, и старый passkey не забывается.
-  Restore снимает все passkey этого origin и все Fast sign ключи (ADR §8).
-  Пара «старый → новый passkey» лежит в localStorage (`pendingMoveOf` в
-  `keys.js`, только публичные ключи) до конца переезда: «Later» не теряет его —
-  в Security висит «Finish moving», и остаток едет на тот же новый ключ и слова,
-  а не на третий.
-- **Имя аккаунта среди слов — мягким мятным** (`accountTag`, токен `--account`):
-  получатель в заголовке и в строке «to …» не должен сливаться с текстом. Шрифт
-  тот же, что у фразы, цвет спокойнее зелёного кнопки подписи.
-- **Кнопка подписи и подтверждение в диалоге принимают клик только через 400 мс**
-  после того, как окно получило фокус и кнопка стала активной (`ARM_MS` в
-  `ui.js`): клик, адресованный другому окну, не подписывает. Фокус в диалоге —
-  на безопасном ответе.
-- **Логотип ведёт домой, а дом стирает секреты** (`forgetOnHome`): корень,
-  показанные слова, вставленный приватный ключ — у каждого экрана свой «Назад»,
-  но логотип его обходит.
-- **24 слова детерминированные.** Тот же passkey всегда даёт те же слова. Для
-  человека, потерявшего бумажку, это спасение; для человека, у которого её
-  украли, — приговор: «перевыпустить» слова нельзя, только сменить сам passkey
-  через «Replace passkey» — это новый корень и переезд.
+- `localhost`, `[::1]` and `127.0.0.1` are **three different origins**. The list is in
+  `ENVIRONMENTS.dev` (`chain.js`); the symptom of a mismatch is "the request never
+  arrived".
+- **The rpid is read right out of `PUB_WA_`.** The key carries its domain inside: 33
+  bytes of the point, a presence byte, a varuint32 length, then the rpid as a string.
+  The chain checks it against `clientDataJSON` at every signature. The practical
+  consequence: the `PUB_WA_` prefix does not tell whether the key is ours or some other
+  site's WebAuthn; look at the rpid (`keyRpid()` in `lib/vault/authority.ts`). A key of
+  another domain will never work in this window.
+- **PRF is turned on only at creation** of the key, and the flag
+  `getClientExtensionResults().prf?.enabled` cannot be trusted: Chrome returns an empty
+  result even for a credential that supports PRF. So there is one check: derive the
+  root right after creation (`confirmKeyFlow`). It did not derive (`NoPrfError`): the
+  key does not go into the cache, the device is asked to forget it (`dropCredential`,
+  `signalUnknownCredential` where available), and the person is offered a phone by QR
+  in the same passkey prompt. It is not asked in advance: `getClientCapabilities`
+  answers for the browser, not for the authenticator, and what each browser puts into
+  `extension:prf` is unchecked: a false `false` would close sign-up to a whole platform.
+- **The key was made, and the second passkey prompt was cancelled** (`NotAllowedError`):
+  the key is already on the device. The same button confirms it (`unconfirmed`) instead
+  of making the next one: otherwise each try would leave one more empty passkey in the
+  system's list. The link "Make a new passkey instead" is for when the key stayed on a
+  phone that is not nearby. Found another way (already in the cache): forgotten,
+  otherwise Replace would "move" to the same key. Another error in the second prompt:
+  forgotten too. The advice "make it again on another device" is only here: a holder of
+  accounts without PRF is shown the usual "update the browser or take another device".
+- **PRF takes at most two salts per touch.** So the hot keys' salt is one per scope,
+  and the key's index is derived locally: otherwise trying 256 indexes would cost
+  hundreds of passkey touches.
+- **The hot key is per scope:** `chain_id`, account, permission (`scopeOf` in
+  `session.js`). One key per browser would mean that a leak opens every account at once,
+  and turning it off on one wipes the key the others live on. The network is by
+  `chain_id`, not by name: XPR has two. Being in IndexedDB does not yet mean "on": the
+  signing screen offers the button only if the chain accepts the signer's key
+  (`signingOptions`), and home reads the same (`keySatisfies`).
+- **Authority for `updateauth` only by agreement of nodes** (`agreedAuthority`): the
+  rewrite keeps everything it read, so one lying node would write its own key into the
+  account with a passkey signature. At least two nodes must answer, and all that answer
+  must agree. For display one is enough (`permissionAuthority`). Right after a
+  permission change nodes may disagree for a second or two: that is a refusal asking to
+  retry, not a signature. `submitWith` also shows, before the touch, who else stays in
+  the permissions (`reviewAuthority`) if anyone remains besides the passkey and this
+  browser's keys: a foreign key, an account, a delay. Keys the change itself adds are
+  passed by the caller in `known`: they are not in the browser yet.
+- **Turning on and off edits exactly one key** (`editKeysAction`): the authority is taken
+  from the chain, the browser key is added or removed, and the rest (threshold,
+  delegations, delays, the previous wallet's keys) goes on as it was. That is how fast
+  trades work on a moved account too (`avral3` with WebAuth keys).
+- **A browser key is not a Fast sign key**, though it is `PUB_R1_` too. The passkey
+  account's panel and turning Fast off count as removable only the R1 keys that are not
+  in this browser's key list (`isFastKey`). Restore and moves remove every R1 on
+  purpose: there they leave the lost or old key, and the new one is not on the chain
+  yet. After a move, one's own old browser keys are forgotten (`forgetMovedDeviceKeys`).
+- **Auto on a browser key knows its account** (`autoFor` in the record): the app gives
+  the iframe one second to decide without the network (`AUTO_DECIDE_MS`), no time to ask
+  the chain whose key it is. The chain is checked after `accept`, as for Fast keys. One
+  account per key: turning Auto off for another account does not touch someone else's
+  `autoFor`.
+- **`PUB_R1_` is a key type, not "ours".** Mobile wallets have such keys too (Secure
+  Enclave). Turning off and replacing the browser key remove only this passkey's slots
+  (`slotsOn`, one touch to derive them); a foreign R1 stays, and turning off says so
+  plainly. Without a passkey (restore with the words) ours cannot be told from foreign
+  ones: there every R1 is removed, and the screen lists them. The Passkey mode does not
+  mean "no browser keys on the chain": the panel reads the chain and, if there are some
+  (another device, a lost IndexedDB), shows them and offers to remove them.
+- **Other permissions at restore.** A thief with the active key can make a child
+  permission with their own key and a `linkauth` on `transfer`; replacing the owner and
+  active keys does not touch it. But legitimate ones look the same: WAX boost
+  (`paybw` → `boost.wax::noop`). So the restore screen shows each one (what it can sign,
+  who holds it, what is under it) with a "Remove" checkbox, off by default; the ticked
+  ones are removed in the same transaction (`unlinkauth`, then `deleteauth`, children
+  before parents).
+- **After a toggle the chain is not read again.** The node's answer to our transaction
+  is the new state; `get_accounts_by_authorizers` indexes with a delay, and an "off" read
+  right after would be a lie.
+- **Linking an existing account sets both keys at once.** The `enroll` screen makes a
+  fast trades key for the scope from the request (a tick, on by default, only on the
+  working permission) and hands both public keys to the app; the wallet sets them in one
+  `updateauth`. Not set: the key lies dead.
+- **The hot key sits on `active`** and on the chain can do everything active can,
+  including `updateauth` of active itself and `transfer` anywhere. Decided in ADR-0010:
+  no separate `trade` permission, the only limit is the vault (the signing screen,
+  `requiresPasskey`). It will not touch owner, and the account comes back with the words.
+- **The error's reason is in `error.details`, not in `what`.** wharfkit's
+  `APIError.formatError` takes it only when `what === 'unspecified'`, and a contract
+  assert has `what` filled in, so out goes "eosio_assert_message assertion failure at
+  /v1/chain/push_transaction", which says nothing. Parsing lives in `errors.js` and in
+  `utils/antelopeError.ts`; never show node errors past them.
+- **Each contract has its own memo grammar.** Spot takes `<asset>@<contract>` (with
+  `|min`, a market order that rolls back if less arrives), the AMM
+  `swapexactin#pool#recipient#minimum@contract#deadline` or
+  `swapexactout#…#exact@contract#…` (then the transfer is a ceiling, and the change goes
+  back to the sender), the bridge `<network domain>:<recipient>` on Telos and
+  `<Telos account>` in the vault on WAX, the order book (`book.alcor`)
+  `swap#<market>#<minimum in units of the token bought>[#recipient]`, and any other memo
+  there is a deposit to the sender's balance. One regex does not cover it, so
+  `summary.js` has a decoder per contract, picked by the transfer's recipient
+  (`chain.alcor`, `chain.bridge`), not by the look of the memo: an Alcor memo to a
+  foreign address is a red banner, not "a swap". Zero in place of the requested amount
+  means "any price" in both, and both must be caught.
+- **The order book counts in the market's lots.** In `placeorder` and `buyquote` the
+  amount is a number of lots, the price is quote units per lot; only the market row
+  (`lot_size`, base, quote) turns them into tokens. It and both tokens are read from the
+  chain at build time (`readBookMarkets` in `sign.js`) and count only if a second node
+  returns the same: one lying node would swap the lot or the pair, and the price on
+  screen would differ from the signed one. Not confirmed: the order is shown in the
+  contract's units with a yellow banner. The price per token is exact; if the lot does
+  not divide it, with `≈`.
+- **A split swap is several transfers.** The summary merges them into one pair of rows
+  if everything but the amounts and the route matches (tokens with precision, sender,
+  recipient). Risks are checked on each leg before merging: a leg with no minimum would
+  not show in the sum. Amounts are BigInt in whole units, not float.
+- **The summary is built from the transaction, not from the request.**
+  `buildTransaction` decodes the built actions back by the ABI; the screen, "What
+  exactly gets signed" and the `requiresPasskey` check look at them. The decoded data is
+  encoded once more and must match the bytes being signed: wharfkit does not encode
+  `data` given as raw bytes, and the decoder stops where the ABI ends, so a tail after
+  it would go to the contract without showing on screen.
+- **Every signer is on screen.** One passkey signs for all its accounts at once; with
+  several, a yellow banner, and the signing mode cannot be chosen.
+- Test account: `alcorsigner1` on Telos is from the prototype: `owner` on the passkey,
+  no words on it. "Recovery phrase" shows it as "not covered yet" and puts the words on
+  owner with a passkey touch.
+- **Key actions are always on the chosen key.** The words and replacement belong to one
+  passkey; with several on the device the person chooses, rather than getting the first
+  one from the cache. A new passkey's name is `Alcor <date, time>`: the OS shows it in
+  every prompt, and a `key-N` counter repeated across browsers and after a cache clear,
+  so "key-1" in a prompt could be the wrong key.
+- **A move does not lie.** Replace does not start while any network is silent; "Moved"
+  / "Restored" only when everything moved, otherwise "Not everything moved" with "Try
+  again" to the same new key, and the old passkey is not forgotten. Restore removes
+  every passkey of this origin and every Fast sign key (ADR §8). The pair "old → new
+  passkey" sits in localStorage (`pendingMoveOf` in `keys.js`, public keys only) until
+  the move ends: "Later" does not lose it; "Finish moving" waits in Security, and the
+  rest goes to the same new key and words, not a third one.
+- **The account name among the words is in soft mint** (`accountTag`, token
+  `--account`): the recipient in the title and in the "to …" row must not blend with
+  the text. The same font as the phrase, a calmer colour than the sign button's green.
+- **The sign button and a dialog's confirm take a click only 400 ms** after the window
+  got focus and the button became active (`ARM_MS` in `ui.js`): a click meant for
+  another window does not sign. Focus in a dialog is on the safe answer.
+- **The logo leads home, and home wipes secrets** (`forgetOnHome`): the root, the words
+  shown, a pasted private key. Each screen has its own "Back", but the logo bypasses it.
+- **The 24 words are deterministic.** The same passkey always gives the same words. For
+  someone who lost the paper that is a rescue; for someone whose paper was stolen, a
+  sentence: the words cannot be "reissued", only the passkey itself replaced through
+  "Replace passkey", which means a new root and a move.
